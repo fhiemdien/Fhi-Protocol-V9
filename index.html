@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Fhi. V9.3 : Conductor</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      :root {
+        /* Default to fhiemdien mode (sky) colors */
+        --accent-rgb: 56 189 248;
+        --accent-light-rgb: 125 211 252;
+      }
+      body {
+        background-color: #020617; /* slate-950 */
+        background-image: 
+          linear-gradient(rgba(51, 65, 85, 0.07) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(51, 65, 85, 0.07) 1px, transparent 1px);
+        background-size: 20px 20px;
+      }
+      
+      @keyframes breakthrough-pulse {
+        0%, 100% { 
+            transform: scale(1.0);
+            box-shadow: 0 0 35px 15px rgba(var(--accent-light-rgb), 0.7); 
+        }
+        50% { 
+            transform: scale(1.05);
+            box-shadow: 0 0 50px 25px rgba(var(--accent-light-rgb), 0.9);
+        }
+      }
+
+      .animate-breakthrough-pulse {
+        animation: breakthrough-pulse 2s ease-in-out infinite;
+      }
+
+      @keyframes wave {
+        0% {
+          transform: scale(0.2);
+          opacity: 1;
+        }
+        100% {
+          transform: scale(2);
+          opacity: 0;
+        }
+      }
+
+      .breakthrough-wave {
+        position: absolute;
+        width: 400px;
+        height: 400px;
+        border-radius: 50%;
+        background: radial-gradient(circle, rgba(var(--accent-light-rgb),0) 40%, rgba(var(--accent-light-rgb),0.4) 60%, rgba(var(--accent-light-rgb),0) 70%);
+        animation: wave 2s linear infinite;
+        transform-origin: center;
+      }
+
+      @keyframes fade-in-out {
+        0%, 100% { opacity: 0; transform: translateY(10px) scale(0.95); }
+        20%, 80% { opacity: 1; transform: translateY(0) scale(1.0); }
+      }
+
+      .animate-fade-in-out {
+        animation: fade-in-out 5.8s ease-in-out forwards;
+        text-shadow: 0 0 15px rgba(var(--accent-light-rgb), 0.8);
+      }
+    </style>
+  <script type="importmap">
+{
+  "imports": {
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.1.1/",
+    "react/": "https://aistudiocdn.com/react@^19.1.1/",
+    "react": "https://aistudiocdn.com/react@^19.1.1",
+    "ajv": "https://esm.sh/ajv@8",
+    "@google/genai": "https://esm.sh/@google/genai",
+    "msgpack-lite": "https://esm.sh/msgpack-lite@0.1.26"
+  }
+}
+</script>
+</head>
+  <body class="text-slate-200 font-sans">
+    <div id="root"></div>
+  </body>
+</html>

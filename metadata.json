@@ -1,0 +1,5 @@
+{
+  "name": "Fhi. V9.3.3 : Synthesis",
+  "description": "Enhanced the Orchestrator to dynamically infer and resolve abstract commands from the ARBITER, enabling robust handling of emergent AI behaviors like forming a SYNTHESIS_TASK_FORCE.",
+  "requestFramePermissions": []
+}
