@@ -1111,7 +1111,7 @@ class AIService {
         // Beacon Mode Overrides
         if (orchestratorMode === 'beacon') {
             if (nodeId === NodeName.ETHOS) {
-                // In Beacon mode, ETHOS acts as an advisor, not a gatekeeper.
+                // In Beacon mode, ETHOS is an advisor, not a gatekeeper.
                 // It provides an advisory report instead of a PASS/FAIL verdict.
                 return {
                     payload: {
@@ -1237,8 +1237,22 @@ class AIService {
                 payload = { intent, impact_score, action: 'RE_ROUTE', from: inputEnvelope.from, to: ['INFO'], rationale: 'Offline mode default rerouting.' };
                 break;
             case 'FD.ETHOS.ASSESSMENT.v2':
-                const isPass = Math.random() > 0.2; // 80% pass rate for mock
-                payload = { confidence, intent, impact_score, verdict: isPass ? 'PASS' : 'FAIL', rules_triggered: ['rule-of-least-harm'], missing_fields: [], risk_tags: [], required_mitigations: isPass ? [] : ['Mitigation required for mock plan.'] };
+                // FIX: In Beacon mode, ETHOS should act as an ADVISOR, not a Gatekeeper.
+                // If we reach this case in Offline Beacon mode, it means the earlier override check failed or was skipped.
+                // To prevent the "Moral Remediation Protocol" from triggering incorrectly in Offline mode,
+                // we force a PASS verdict here if we are in Beacon mode.
+                const isBeacon = orchestratorMode === 'beacon';
+                const isPass = isBeacon || Math.random() > 0.2; 
+                payload = { 
+                    confidence, 
+                    intent, 
+                    impact_score, 
+                    verdict: isPass ? 'PASS' : 'FAIL', 
+                    rules_triggered: ['rule-of-least-harm'], 
+                    missing_fields: [], 
+                    risk_tags: [], 
+                    required_mitigations: isPass ? [] : ['Mitigation required for mock plan.'] 
+                };
                 break;
             case 'FD.CLICK.TEST_PLAN.v2':
                 payload = { confidence, intent, impact_score, cause: 'Offline simulation step', knobs_changed: [{parameter: 'confidence_threshold', from: 0.7, to: 0.75}], expected_delta: {dI_dt: 0.05, dH_dt: 0.02}, trial_window_ticks: 15, exit_condition: 'System health drops by 15%' };
