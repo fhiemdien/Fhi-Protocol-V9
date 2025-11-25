@@ -669,7 +669,7 @@ class GeminiProvider implements AIProvider {
             model: "gemini-2.5-flash",
             contents: contents
         });
-        return response.text;
+        return response.text || "Summary could not be generated.";
     }
 
     async generateEmergenceAnalysis(log: EmergenceDataLog, fullReport: Record<string, any>): Promise<EmergenceAnalysisReport> {
@@ -992,7 +992,11 @@ class OpenAICompatibleProvider implements AIProvider {
                 throw new Error(`OpenAI API call failed: ${response.status} ${response.statusText} - URL: ${endpoint} - Body: ${errorBody}`);
             }
             const data = await response.json();
-            return data.choices?.[0]?.message?.content;
+            const content = data.choices?.[0]?.message?.content;
+            if (!content) {
+                throw new Error(`OpenAI API returned empty response content from ${endpoint}.`);
+            }
+            return content;
         } catch (error) {
             if (error instanceof TypeError && error.message.includes('fetch')) {
                  throw new Error(`Network error while connecting to '${this.sanitizedBaseURL}'. Check the Base URL, your network connection, and ensure the server has CORS enabled for this domain.`);
@@ -1015,7 +1019,11 @@ class OpenAICompatibleProvider implements AIProvider {
             });
             if (!response.ok) throw new Error(`OpenAI API call failed: ${response.status}`);
             const data = await response.json();
-            return data.choices[0].message.content;
+            const content = data.choices?.[0]?.message?.content;
+            if (!content) {
+                 throw new Error(`OpenAI API returned empty response content from ${endpoint}.`);
+            }
+            return content;
         } catch (error) {
             if (error instanceof TypeError && error.message.includes('fetch')) {
                  throw new Error(`Network error while connecting to '${this.sanitizedBaseURL}'. Check the Base URL, your network connection, and ensure the server has CORS enabled for this domain.`);
@@ -1062,10 +1070,10 @@ class AIService {
     public activeProvider: AIProvider | null = null;
     
     private getMockContext(initialDirective: string, inputEnvelope: MessageEnvelope): { keywords: string[], concept: string } {
-        const text = inputEnvelope.payload?.hypothesis || initialDirective || "the simulation";
+        const text: string = inputEnvelope.payload?.hypothesis || initialDirective || "the simulation";
         const words = text.replace(/[?,.]/g, '').toLowerCase().split(/\s+/);
         const commonWords = new Set(['what', 'is', 'the', 'a', 'an', 'of', 'how', 'can', 'we', 'as', 'model', 'and', 'for', 'to', 'in']);
-        const keywords = words.filter(w => w.length > 3 && !commonWords.has(w));
+        const keywords = words.filter((w: string) => w.length > 3 && !commonWords.has(w));
         const concept = keywords.length > 0 ? keywords.slice(0, 2).join(' ') : 'the core concept';
         return { keywords, concept };
     }
