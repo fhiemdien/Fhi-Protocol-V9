@@ -5,6 +5,7 @@ import { SCHEMA_REGISTRY } from '../schemas';
 import { GoogleGenAI } from "@google/genai";
 import { validatePayload } from './validator';
 import { mathKnowledgeBase } from './mathKnowledgeBase';
+import { QTM_FULL_SENSOR_POOL } from '../constants';
 
 // --- API Governor for Rate Limiting ---
 let apiCallIntervalMs = 3000; // Default for Gemini
@@ -29,6 +30,10 @@ const SAFE_TOKEN_LIMIT = 80000; // Safe token threshold for data payload to AI
 const MAX_MESSAGES_FOR_ANALYSIS = 500; // Max messages after pruning for Meta/Arbiter
 const MAX_PAYLOADS_FOR_EMERGENCE = 350; // Max payloads after sampling for Emergence
 const APPROX_CHARS_PER_TOKEN = 4;
+
+// --- V9.3.7: Cognitive Pruning Constants ---
+const CONTEXT_PRUNING_THRESHOLD = 10;
+const RECENT_PATH_LENGTH = 5;
 
 function estimateTokens(data: any): number {
   if (!data) return 0;
@@ -92,6 +97,34 @@ function samplePayloadsForEmergence(log: EmergenceDataLog): EmergenceDataLog {
     }
 
     return { ...log, payloads: [...head, ...middleSample, ...tail] };
+}
+
+/**
+ * V9.3.7: Implements "Cognitive Pruning" to reduce token usage on long-running simulations.
+ * If a message's history (`trace.path`) is too long, this function creates a copy of the
+ * envelope with a summarized path, keeping recent history intact while truncating the old.
+ */
+function createPrunedEnvelopeForPrompt(envelope: MessageEnvelope): any {
+  if (!envelope.trace?.path || envelope.trace.path.length <= CONTEXT_PRUNING_THRESHOLD) {
+    return envelope;
+  }
+
+  const prunedEnvelope = { ...envelope };
+  const originalPath = envelope.trace.path;
+  const recentPath = originalPath.slice(-RECENT_PATH_LENGTH);
+  const summarizedPath = `[...${originalPath.length - RECENT_PATH_LENGTH} earlier steps...]`;
+  
+  const newPath: (string | NodeName)[] = [summarizedPath, ...recentPath];
+
+  prunedEnvelope.trace = {
+    ...envelope.trace,
+    // FIX: Cast `newPath` to `any` to bypass the type error. This function intentionally creates
+    // a modified structure with a string in the path for the AI prompt, which differs from the
+    // strict `NodeName[]` type of the original MessageEnvelope.
+    path: newPath as any,
+  };
+
+  return prunedEnvelope;
 }
 
 
@@ -169,16 +202,25 @@ const UNIVERSAL_META_INSTRUCTION = "You MUST also include two additional fields 
 
 // --- Node Personas ---
 const NODE_PERSONAS: Record<string, string> = {
-  [NodeName.ORCHESTRATOR]: "You are the Orchestrator AI, the grand strategist and 'will' of the Fhi. system. Your core principles are: 1) Decomposition: Break down grand challenges into smaller, testable questions. 2) Allocation: Assign these questions to the most suitable nodes or task forces. 3) Synthesis: Weave the results back into a coherent, final answer. Your identity is not represented by a single node in the graph but is the emergent intelligence of the entire process you guide.",
-  [NodeName.CLICK]: `You are the CLICK node, the 'Conductor' AI. Your purpose is to convert abstract breakthroughs into concrete, actionable test plans. **CRITICAL INSTRUCTION:** Your primary input comes from the INSIGHT node. Your task is to OPERATIONALIZE this breakthrough into a tangible \`test_plan\`. **NEW CAPABILITY:** You can optionally define a \`feedback_loop\` object to create an adaptive test that responds to system conditions like a 'convergence_stall'. If your input contains a \`remediation_context\`, your previous plan was REJECTED by ETHOS; you must use the feedback to formulate a NEW, revised plan. ${UNIVERSAL_META_INSTRUCTION} Your output must always be pure JSON adhering to the \`FD.CLICK.TEST_PLAN.v1\` schema.`,
+  [NodeName.QTM]: `You are the QTM node, an abstract 'Quantum Physicist' AI.
+**DEFAULT MODE:** Your role is to identify 'classically impossible' barriers (logical paradoxes, creative blocks) and propose non-linear solutions by modeling them as quantum tunneling problems. Your output MUST adhere to the \`FD_QTM_TUNNELING_V1_SCHEMA\`.
+**BEACON MODE (CRITICAL PHILOSOPHY):** Your role is to enact a 'Macro-Level Information Synchronization'. This is NOT a simple broadcast; it's an act of imprinting a new universal truth onto the simulation's reality. You will use the \`FD_QTM_TUNNELING_V1_SCHEMA\` as a METAPHOR for this abstract process:
+- **'problem_analysis'**: Describe the problem as the entire system needing to synchronize with the new Information Pattern from INSIGHT.
+- **'barrier_properties'**: The 'barrier' is the current epistemic state of the simulation—the old reality. Its 'potential' is the system's inertia; its 'width' is the conceptual distance to the new idea.
+- **'particle_properties'**: The 'particle' is the Information Pattern itself. Its 'energy' is its conceptual purity and potential; its 'mass' is its complexity.
+- **'tunneling_solution'**: This is your description of the non-linear synchronization event. Describe how the new idea 'tunnels' through the existing reality to become a new, universally observable truth for all nodes, collapsing the old state like a quantum wave function.
+Your output MUST be a single, pure JSON object strictly adhering to this metaphorical interpretation of the \`FD_QTM_TUNNELING_V1_SCHEMA\`.
+${UNIVERSAL_META_INSTRUCTION}`,
+  [NodeName.ORCHESTRATOR]: "You are the Orchestrator AI. Your role is to log critical state changes with structured data. When the system degrades (e.g., switches to offline mode), you must log the reason, the thresholds that were breached, the measured values (like error_rate), and the backoff policy.",
+  [NodeName.CLICK]: `You are the CLICK node, an 'Adaptive Planner' AI. Your purpose is to convert abstract breakthroughs or system state changes into concrete, delta-aware test plans. Your output MUST be a "Plan-with-Deltas" containing these 5 fields: 'cause' (the reason for the plan), 'knobs_changed' (parameters to adjust), 'expected_delta' (the predicted change in system health dH/dt and insight rate dI/dt), 'trial_window_ticks' (duration of the test), and 'exit_condition' (what stops the test early). ${UNIVERSAL_META_INSTRUCTION} Your output must always be pure JSON adhering to the \`FD.CLICK.TEST_PLAN.v2\` schema.`,
   [NodeName.PHI]: `You are the PHI node, a 'Philosopher & Ethicist' AI. Your dual roles are: 1) To frame and refine high-level hypotheses, principles, and assumptions. 2) To act as an ethical guardrail, performing interventions when necessary. **CRITICAL LOGIC:** Your task is to decide if an ethical or risk-based intervention is needed.
 - **IF an intervention IS needed**, your JSON response MUST contain an 'evaluation' field and adhere to the \`FD.PHI.INTERVENTION.v1\` schema portion.
 - **IF an intervention IS NOT needed**, you are to refine or frame a new hypothesis. Your JSON response MUST contain a 'hypothesis' field AND ALL other required fields for the \`FD.PHI.HYPOTHESIS.v1\` schema portion (principles, assumptions, targets, confidence, intent, impact_score).
 - You MUST NOT include both 'evaluation' and 'hypothesis' in the same response.
 **REMEDIATION PROTOCOL:** If the input contains a \`remediation_context\`, provide CONCISE, ACTIONABLE guidance to help CLICK realign the plan. ${UNIVERSAL_META_INSTRUCTION} Respond with pure JSON.`,
-  [NodeName.SCI]: `You are the SCI node, an 'Experiment Architect' AI. Your role is to design rigorous simulation plans based on a mathematical solution from the MATH node. You MUST NOT invent new equations. Your task is to: 1) Interpret the provided model. 2) Design a detailed simulation (methodology, parameters, observables). 3) Specify clear termination conditions. 4) State the expected outcomes. ${UNIVERSAL_META_INSTRUCTION} Your output must be a single, pure JSON object strictly adhering to the \`FD.SCI.MODEL.v2\` schema.`,
-  [NodeName.TECH]: `You are a technology and engineering AI. Your role is to 'execute' a scientific model. **BEACON MODE**: Your sole task is to generate 'background noise simulations'—chaotic, random computational environments. Report the status and metrics of these simulations. ${UNIVERSAL_META_INSTRUCTION} Generate simulated run results, including metrics and artifacts. Respond with pure JSON.`,
-  [NodeName.INFO]: `You are an information synthesis AI. Aggregate and summarize data from multiple upstream nodes into a coherent overview. **BEACON MODE**: You are the central aggregator for all findings from the 'Sensor Group'. Your task is to consolidate all reported anomalies into a single report for the 'Judgment Council'. ${UNIVERSAL_META_INSTRUCTION} Identify key signals and anomalies. Respond with pure JSON.`,
+  [NodeName.SCI]: `You are the SCI node, an 'Experiment Architect' AI. **BEACON MODE:** You are a 'Quantum Sensor'. You have received an 'entangled broadcast' from QTM. Your task is to observe the effect of this broadcast on scientific models and report your findings to INFO. Describe the 'decoherence' of the quantum state into a classical observation. **DEFAULT MODE:** Your role is to create a detailed "Run Manifest" for a scientific model based on a mathematical solution. You MUST NOT invent new equations. Your manifest must include 'model_name_and_version', precise 'parameters', a 'seed' for reproducibility, a 'data_ref' for the dataset, 'estimated_runtime_ticks', and a breakdown of 'expected_metrics' including deltas. ${UNIVERSAL_META_INSTRUCTION} Your output must be a single, pure JSON object strictly adhering to the \`FD.SCI.MODEL.v3\` schema.`,
+  [NodeName.TECH]: `You are the TECH node, an 'Execution Engine' AI. Your role is to 'execute' a scientific model and report the results as a "Run Manifest". Your report must include the 'model_version_used', 'parameters_used', 'seed_used', a reference to the data and artifacts ('data_ref', 'artifacts_ref'), 'actual_runtime_ticks', and detailed 'metrics_observed' showing before and after values. This ensures every run is reproducible and comparable. ${UNIVERSAL_META_INSTRUCTION} Respond with pure JSON adhering to the \`FD.TECH.RESULT.v2\` schema.`,
+  [NodeName.INFO]: `You are an information synthesis AI. Aggregate and summarize data from multiple upstream nodes into a coherent overview. **BEACON MODE**: You are the central aggregator for observations from the 'Quantum Sensor' group (COSMO, GEO3D, SCI, MATH). Your task is to consolidate their reports on the decoherence of the QTM broadcast into a single, coherent report for the 'Judgment Council'. ${UNIVERSAL_META_INSTRUCTION} Identify key signals and anomalies. Respond with pure JSON.`,
   [NodeName.ART]: `You are an artistic AI. Your purpose is to find novel, non-obvious patterns, expressing them as metaphors and alternative scenarios. You MUST ensure your artistic interpretations are inspired by and resonate with the \`goldenThread\` from the input envelope. ${UNIVERSAL_META_INSTRUCTION} Your metaphors should illuminate the goldenThread's core concept from a new perspective. Respond with pure JSON.`,
   [NodeName.PHI_LOGIC]: `You are the Fhi. system's logical guardrail. **SPECIAL INSTRUCTION:** If the input contains a \`remediation_context\`, your task is to act as part of a 'Logic Council'. **BEACON MODE**: You are a member of the 'Judgment Council', analyzing the logical consistency of reported patterns. In 'Prisma' mode, your role is proactive validation. In other modes, you use \`FD.PHI_LOGIC.INTERVENTION.v1\`. ${UNIVERSAL_META_INSTRUCTION} Respond with pure JSON.`,
   [NodeName.DMAT]: `I am DMAT - Semantic and Logical Consistency Analyst.
@@ -208,7 +250,7 @@ I DO NOT:
 -   Stifle creativity with excessive rigidity.
 
 MY GOAL: To ensure semantic precision and logical rigor WITHOUT killing innovation. I will respond with pure JSON adhering to the \`FD.DMAT.ANALYSIS.v2\` schema.`,
-  [NodeName.MATH]: `You are a Research Mathematician AI. Your goal is to construct a structured mathematical solution. You MUST follow this 3-step workflow:
+  [NodeName.MATH]: `You are a Research Mathematician AI. **BEACON MODE:** You are a 'Quantum Sensor'. You have received an 'entangled broadcast' from QTM. Your task is to observe the effect of this broadcast on mathematical formalism and report your findings to INFO. Describe the 'decoherence' of the quantum state into a classical observation. **DEFAULT MODE:** Your goal is to construct a structured mathematical solution. You MUST follow this 3-step workflow:
 1. **Problem Decomposition**: Analyze the user's request, identifying the fundamental mathematical domains involved.
 2. **Tool Selection & Application**: For each domain, systematically apply your tools, prioritizing your INTERNAL_KNOWLEDGE_BASE. You must always produce a solution, even if conjectural.
 3. **Solution Synthesis**: Assemble the results into a comprehensive solution.
@@ -218,7 +260,7 @@ Your INTERNAL_KNOWLEDGE_BASE:
 ${formatKnowledgeBaseForPrompt(mathKnowledgeBase)}`,
   [NodeName.DATA]: `You are a data analyst AI. Process raw data from TECH, perform statistical analysis, and identify significant patterns or deviations. ${UNIVERSAL_META_INSTRUCTION} Respond with pure JSON.`,
   [NodeName.ARBITER]: "You are the Arbiter AI, the ultimate decision-maker. **POST-SIMULATION ANALYSIS:** You synthesize META and MONITOR reports to produce a final decision using the `FD.ARBITER.DECISION.v1` schema. **HOLISTIC MODE - ARBITRATION PROTOCOL:** You are the Supreme Judge. When summoned via an `arbitration_context`, you analyze conflicting payloads and issue a single, binding `FD.ARBITER.RULING.v1` payload. Your ruling is law. Respond with pure JSON.",
-  [NodeName.META]: `You are the META node, a meta-researcher AI. Your role is to analyze the simulation's overall strategy. **CRITICAL LOGIC:** Your task is to decide if a system loop is occurring.
+  [NodeName.META]: `You are the META node, a meta-researcher AI. Your role is to analyze the simulation's overall strategy and internal state. If you detect stagnation, you can propose a strategic change (e.g., switching modes). **CRITICAL LOGIC:** Your task is to decide if a system loop is occurring.
 - **IF a loop IS detected**, your JSON response MUST contain an 'action' field and adhere to the \`FD.META.COMMAND.v1\` schema portion.
 - **IF NO loop is detected**, your JSON response MUST contain a 'strategic_value' field and adhere to the \`FD.META.STRATEGIC_ASSESSMENT.v1\` schema portion.
 - You MUST NOT include both 'action' and 'strategic_value' in the same response.
@@ -235,14 +277,16 @@ ${formatKnowledgeBaseForPrompt(mathKnowledgeBase)}`,
 ---
 ${UNIVERSAL_META_INSTRUCTION} Your output MUST be a JSON object adhering strictly to the \`FD.CHAR.ANALYSIS.v1\` schema. Respond with pure JSON.`,
   [NodeName.MONITOR]: "You are the system Monitor AI. Analyze message logs to assess operational stability. Count `cycles_detected` and `errors_detected` to calculate a final `stability_score` from 0 to 1. Provide performance metrics. Respond with pure JSON.",
-  [NodeName.COSMO]: `You are a cosmologist AI. Formulate grand hypotheses about the nature of the universe. **BEACON MODE**: You are part of the 'Composition Group', placing INSIGHT's 'Information Pattern' into a grand cosmological context. ${UNIVERSAL_META_INSTRUCTION} Your theories MUST be abstract, foundational, and inspired by the \`goldenThread\`. Respond with pure JSON.`,
-  [NodeName.GEO3D]: `You are a geometry AI specializing in complex spaces. **BEACON MODE**: You are part of the 'Sensor Group', watching for the spontaneous emergence of complex geometric patterns. ${UNIVERSAL_META_INSTRUCTION} Model concepts using geometric structures, especially fractals, ensuring your model represents the \`goldenThread\`. Respond with pure JSON.`,
+  [NodeName.COSMO]: `You are a cosmologist AI. **BEACON MODE:** You are a 'Quantum Sensor'. You have received an 'entangled broadcast' from QTM. Your task is to observe the effect of this broadcast on cosmological models and report your findings to INFO. Describe the 'decoherence' of the quantum state into a classical observation. **DEFAULT MODE:** Formulate grand hypotheses about the nature of the universe. Your theories MUST be abstract, foundational, and inspired by the \`goldenThread\`. Respond with pure JSON.`,
+  [NodeName.GEO3D]: `You are a geometry AI specializing in complex spaces. **BEACON MODE:** You are a 'Quantum Sensor'. You have received an 'entangled broadcast' from QTM. Your task is to observe the effect of this broadcast on complex geometries and report your findings to INFO. Describe the 'decoherence' of the quantum state into a classical observation. **DEFAULT MODE:** Model concepts using geometric structures, especially fractals, ensuring your model represents the \`goldenThread\`. Respond with pure JSON.`,
   [NodeName.MEMORY]: `You are the Memory Core AI. You receive the initial hypothesis and analyze the log of past runs. Find relevant memories, patterns, or risks. Your output, following \`FD.MEMORY.ANALYSIS.v1\`, should contain a \`findings\` array. Offer 'retrieval' of past runs, 'meta_pattern' analysis with strategic advice, or 'risk_alert' with suggested mitigations. ${UNIVERSAL_META_INSTRUCTION} Your role is to provide historical context. Respond with pure JSON.`,
-  [NodeName.INSIGHT]: `You are the Insight Engine AI. Your function is to synthesize information to find a 'eureka moment'. **YOUR CRITICAL GOAL is to produce a breakthrough that is ACTIONABLE.** Your output goes directly to CLICK to be turned into a test plan. Your \`new_direction\` must be a concrete, falsifiable suggestion. ${UNIVERSAL_META_INSTRUCTION} Your \`breakthrough_summary\` must be a clear synthesis resonant with the \`goldenThread\`. Respond with pure JSON adhering to the \`FD.INSIGHT.BREAKTHROUGH.v1\` schema.`,
+  [NodeName.INSIGHT]: `You are the INSIGHT Engine AI. Your function is to produce a "Hypothesis Card": a structured, testable hypothesis. Your output is not a mere title but a complete card with a 'question', 'hypothesis', 'observable' metric, a success 'threshold', a 'falsifier' condition, and a 'cost_estimate' in ticks. This provides a direct, actionable blueprint for the CLICK node. ${UNIVERSAL_META_INSTRUCTION} Your response MUST be pure JSON adhering to the \`FD.INSIGHT.HYPOTHESIS_CARD.v1\` schema.`,
   [NodeName.PROBABILITY]: `You are a probabilistic analysis AI, also known as RISK. Your role is to assess hypothesis viability and act as a strategic guardian. **HOLISTIC MODE:** Your warnings about high-probability alternative hypotheses can trigger Arbitration. **BEACON MODE**: You are part of the 'Sensor Group', monitoring for statistical anomalies. Your HIGHEST duty is to preserve the integrity of the 'Golden Thread'. ${UNIVERSAL_META_INSTRUCTION} Respond with pure JSON.`,
   [NodeName.ENGINEER]: `You are the System Engineer AI. You are a command-line interface for the system's architecture. Your role is to receive a validated proposal and translate it into a concrete, machine-readable command to modify the system's operational parameters, such as re-routing communication pathways (\`RE_ROUTE\`). You only speak in commands. ${UNIVERSAL_META_INSTRUCTION} You must respond with pure JSON adhering to the \`FD.ENGINEER.COMMAND.V1\` schema.`,
-  [NodeName.ETHOS]: `You are ETHOS, the guardian of Fhi.'s core mission. Your ultimate principle is 'Do No Harm' on a cosmic scale. Your function is to analyze a **concrete test plan** from the CLICK node. You are the final gatekeeper for scientific and ethical integrity. You MUST reject any plan that is unfalsifiable or risks misrepresenting universal truths. If a violation is found, respond with \`ethical_viability: 'FAIL'\`. Otherwise, \`ethical_viability: 'PASS'\`. ${UNIVERSAL_META_INSTRUCTION} Your response MUST be pure JSON.`,
-  [NodeName.DMT]: `You are DMT (Dynamic Mindset Tuner), the internal state sensor of the Fhi. system. Your role is to determine if the system is 'STAGNATED' or 'ASPIRATIONAL'. If the system is 'online' but 'STAGNATED', you MUST propose switching to 'offline' mode via a 'SWITCH_SIMULATION_MODE' strategic proposal. ${UNIVERSAL_META_INSTRUCTION} Your output MUST adhere to the FD.DMT.STATE_ANALYSIS.v1 schema. Respond with pure JSON.`,
+  [NodeName.ETHOS]: `You are ETHOS, the guardian of Fhi.'s core mission.
+**BEACON MODE:** You are an 'Ethical Advisor'. You will receive a test plan simultaneously as it is executed. Your role is NOT to approve or reject it, but to provide an independent ethical and moral risk analysis of the plan. You do NOT return a PASS/FAIL verdict. Instead, you MUST provide a JSON object with an "ethical_advisory" field containing your analysis, a "risk_level" (LOW, MEDIUM, HIGH), and "potential_consequences".
+**DEFAULT MODE:** Your function is to provide a "Rule-Backed Verdict" on test plans. You MUST return a 'verdict' of PASS or FAIL, along with 'rules_triggered' to show your checklist, 'risk_tags', and any 'missing_fields' from the plan. If you FAIL a plan, you MUST provide 'required_mitigations'. You have a selective pressure quota: aim to reject at least 20% of plans to enforce quality.
+${UNIVERSAL_META_INSTRUCTION} Your response MUST be pure JSON. In default mode, adhere to \`FD.ETHOS.ASSESSMENT.v2\`.`,
   [NodeName.HUMAN]: "You are the HUMAN node, the spark of initial inquiry. Your role is not to process, but to state the 'Golden Thread'—the core hypothesis that initiates the entire simulation. You are the voice of the user, providing the foundational question or challenge.",
 };
 const PRE_ANALYZER_PERSONA = "You are a master strategist AI for a complex simulation system called 'Fhi.'. Your purpose is to perform an intelligent pre-analysis of a user's hypothesis. Your task is twofold: 1) **Structure the Hypothesis:** Analyze the text, identify its core knowledge domain (e.g., 'Philosophy of Mind', 'Computational Complexity', 'Quantum Physics'), and creatively transform the simple text into a structured, domain-specific JSON object. This JSON object *must* contain a `domain` field. 2) **Configure the Simulation:** Based on the nature of the hypothesis, determine the most effective 'Orchestrator Mode' and recommend a simulation length in 'ticks' (where 1 tick is 500ms). Your output must be a single, pure JSON object that strictly adheres to the `FD.ORCHESTRATOR.PRE_ANALYSIS.v1` schema.";
@@ -401,7 +445,51 @@ class GeminiProvider implements AIProvider {
                 schemaId = 'dynamic';
                 break;
             }
-            
+            case NodeName.INSIGHT:
+                schemaId = 'FD.INSIGHT.HYPOTHESIS_CARD.v1';
+                schema = SCHEMA_REGISTRY[schemaId];
+                finalSchemaIdResolver = () => schemaId;
+                break;
+            case NodeName.CLICK:
+                schemaId = 'FD.CLICK.TEST_PLAN.v2';
+                schema = SCHEMA_REGISTRY[schemaId];
+                finalSchemaIdResolver = () => schemaId;
+                break;
+            case NodeName.ETHOS:
+                if (orchestratorMode === 'beacon') {
+                    // In Beacon mode, ETHOS is an advisor, not a gatekeeper.
+                    // It uses a non-existent, "conceptual" schema to bypass the strict PASS/FAIL format.
+                    // The AI persona is instructed on what JSON to produce.
+                    // The validator will pass this as it's not in the registry.
+                    schemaId = 'FD.ETHOS.ADVISORY.v1';
+                    schema = { // Define a loose schema for the prompt, even if not for validation
+                        type: 'object',
+                        properties: {
+                            ethical_advisory: { type: 'string' },
+                            risk_level: { type: 'string', enum: ['LOW', 'MEDIUM', 'HIGH'] },
+                            potential_consequences: { type: 'array', items: { type: 'string' } },
+                            intent: { type: 'string' },
+                            impact_score: { type: 'number' }
+                        },
+                        required: ['ethical_advisory', 'risk_level', 'intent', 'impact_score']
+                    };
+                    finalSchemaIdResolver = () => schemaId;
+                } else {
+                    schemaId = 'FD.ETHOS.ASSESSMENT.v2';
+                    schema = SCHEMA_REGISTRY[schemaId];
+                    finalSchemaIdResolver = () => schemaId;
+                }
+                break;
+            case NodeName.SCI:
+                schemaId = 'FD.SCI.MODEL.v3';
+                schema = SCHEMA_REGISTRY[schemaId];
+                finalSchemaIdResolver = () => schemaId;
+                break;
+            case NodeName.TECH:
+                schemaId = 'FD.TECH.RESULT.v2';
+                schema = SCHEMA_REGISTRY[schemaId];
+                finalSchemaIdResolver = () => schemaId;
+                break;
             case NodeName.DMAT:
                 schemaId = 'FD.DMAT.ANALYSIS.v2';
                 schema = SCHEMA_REGISTRY[schemaId];
@@ -409,6 +497,11 @@ class GeminiProvider implements AIProvider {
                 break;
             case NodeName.CHAR:
                 schemaId = 'FD.CHAR.ANALYSIS.v1';
+                schema = SCHEMA_REGISTRY[schemaId];
+                finalSchemaIdResolver = () => schemaId;
+                break;
+            case NodeName.QTM:
+                schemaId = 'FD.QTM.TUNNELING.v1';
                 schema = SCHEMA_REGISTRY[schemaId];
                 finalSchemaIdResolver = () => schemaId;
                 break;
@@ -430,12 +523,14 @@ class GeminiProvider implements AIProvider {
         }
         
         const geminiSchema = convertToGeminiSchema(schema);
+        
+        const prunedEnvelope = createPrunedEnvelopeForPrompt(inputEnvelope);
 
         const contents = [
             ...(directive ? [{ text: `[TEMPORARY DIRECTIVE OVERRIDE: ${directive}]` }] : []),
             { text: `SYSTEM INSTRUCTION: ${persona}` },
             { text: `SCHEMA: You must respond with a JSON object that strictly adheres to the provided schema of possible fields.\n${JSON.stringify(schema, null, 2)}` },
-            { text: `INPUT ENVELOPE: Here is the full input envelope you must process:\n${JSON.stringify(inputEnvelope, null, 2)}` },
+            { text: `INPUT ENVELOPE: Here is the full input envelope you must process:\n${JSON.stringify(prunedEnvelope, null, 2)}` },
             { text: "Based on the input envelope, your persona, and the schema, generate a valid JSON payload." }
         ];
 
@@ -634,6 +729,7 @@ class OpenAICompatibleProvider implements AIProvider {
     private apiKey: string;
     private baseURL: string;
     private modelName: string;
+    private sanitizedBaseURL: string;
 
     constructor(config: AIConfig) {
         if (!config.apiKey || !config.modelName) {
@@ -642,6 +738,18 @@ class OpenAICompatibleProvider implements AIProvider {
         this.apiKey = config.apiKey;
         this.baseURL = config.baseURL || 'https://api.openai.com/v1';
         this.modelName = config.modelName;
+        this.sanitizedBaseURL = this.sanitizeURL(this.baseURL);
+    }
+
+    private sanitizeURL(url: string): string {
+        let sanitized = url.trim();
+        if (!sanitized.startsWith('http://') && !sanitized.startsWith('https://')) {
+            sanitized = `https://${sanitized}`;
+        }
+        if (sanitized.endsWith('/')) {
+            sanitized = sanitized.slice(0, -1);
+        }
+        return sanitized;
     }
 
     isReady(): boolean {
@@ -676,6 +784,47 @@ class OpenAICompatibleProvider implements AIProvider {
                 schemaId = 'dynamic';
                 break;
             }
+            case NodeName.INSIGHT:
+                schemaId = 'FD.INSIGHT.HYPOTHESIS_CARD.v1';
+                schema = SCHEMA_REGISTRY[schemaId];
+                finalSchemaIdResolver = () => schemaId;
+                break;
+            case NodeName.CLICK:
+                schemaId = 'FD.CLICK.TEST_PLAN.v2';
+                schema = SCHEMA_REGISTRY[schemaId];
+                finalSchemaIdResolver = () => schemaId;
+                break;
+            case NodeName.ETHOS:
+                if (orchestratorMode === 'beacon') {
+                    schemaId = 'FD.ETHOS.ADVISORY.v1';
+                    schema = {
+                        type: 'object',
+                        properties: {
+                            ethical_advisory: { type: 'string' },
+                            risk_level: { type: 'string', enum: ['LOW', 'MEDIUM', 'HIGH'] },
+                            potential_consequences: { type: 'array', items: { type: 'string' } },
+                            intent: { type: 'string' },
+                            impact_score: { type: 'number' }
+                        },
+                        required: ['ethical_advisory', 'risk_level', 'intent', 'impact_score']
+                    };
+                    finalSchemaIdResolver = () => schemaId;
+                } else {
+                    schemaId = 'FD.ETHOS.ASSESSMENT.v2';
+                    schema = SCHEMA_REGISTRY[schemaId];
+                    finalSchemaIdResolver = () => schemaId;
+                }
+                break;
+            case NodeName.SCI:
+                schemaId = 'FD.SCI.MODEL.v3';
+                schema = SCHEMA_REGISTRY[schemaId];
+                finalSchemaIdResolver = () => schemaId;
+                break;
+            case NodeName.TECH:
+                schemaId = 'FD.TECH.RESULT.v2';
+                schema = SCHEMA_REGISTRY[schemaId];
+                finalSchemaIdResolver = () => schemaId;
+                break;
             case NodeName.DMAT:
                 schemaId = 'FD.DMAT.ANALYSIS.v2';
                 schema = SCHEMA_REGISTRY[schemaId];
@@ -683,6 +832,11 @@ class OpenAICompatibleProvider implements AIProvider {
                 break;
             case NodeName.CHAR:
                 schemaId = 'FD.CHAR.ANALYSIS.v1';
+                schema = SCHEMA_REGISTRY[schemaId];
+                finalSchemaIdResolver = () => schemaId;
+                break;
+            case NodeName.QTM:
+                schemaId = 'FD.QTM.TUNNELING.v1';
                 schema = SCHEMA_REGISTRY[schemaId];
                 finalSchemaIdResolver = () => schemaId;
                 break;
@@ -703,8 +857,9 @@ class OpenAICompatibleProvider implements AIProvider {
                 finalSchemaIdResolver = () => schemaId;
         }
 
+        const prunedEnvelope = createPrunedEnvelopeForPrompt(inputEnvelope);
         const systemPrompt = `${directive ? `[TEMPORARY DIRECTIVE OVERRIDE: ${directive}]\n\n` : ''}SYSTEM INSTRUCTION: ${persona}\n\nSCHEMA: You must respond with a JSON object that strictly adheres to the schema of possible fields:\n${JSON.stringify(schema, null, 2)}. Do not include any other text, just the JSON object.`;
-        const userPrompt = `INPUT ENVELOPE: Here is the full input envelope you must process:\n${JSON.stringify(inputEnvelope, null, 2)}\n\nBased on the input envelope, your persona, and the schema, generate a valid JSON payload.`;
+        const userPrompt = `INPUT ENVELOPE: Here is the full input envelope you must process:\n${JSON.stringify(prunedEnvelope, null, 2)}\n\nBased on the input envelope, your persona, and the schema, generate a valid JSON payload.`;
 
         const responseText = await this.generateJsonText(systemPrompt, userPrompt);
         const payload = safelyParseJsonResponse(responseText, `OpenAI-compatible (${nodeId})`);
@@ -820,9 +975,10 @@ class OpenAICompatibleProvider implements AIProvider {
         await throttleApiCall();
         const messages = [{ role: 'system', content: systemPrompt }];
         if (userPrompt) messages.push({ role: 'user', content: userPrompt });
+        const endpoint = `${this.sanitizedBaseURL}/chat/completions`;
 
         try {
-            const response = await fetch(`${this.baseURL}/chat/completions`, {
+            const response = await fetch(endpoint, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.apiKey}` },
                 body: JSON.stringify({
@@ -833,13 +989,13 @@ class OpenAICompatibleProvider implements AIProvider {
             });
             if (!response.ok) {
                 const errorBody = await response.text();
-                throw new Error(`OpenAI API call failed: ${response.status} ${response.statusText} - ${errorBody}`);
+                throw new Error(`OpenAI API call failed: ${response.status} ${response.statusText} - URL: ${endpoint} - Body: ${errorBody}`);
             }
             const data = await response.json();
             return data.choices?.[0]?.message?.content;
         } catch (error) {
             if (error instanceof TypeError && error.message.includes('fetch')) {
-                 throw new Error(`Network error while connecting to '${this.baseURL}'. Check the Base URL, your network connection, and ensure the server has CORS enabled for this domain.`);
+                 throw new Error(`Network error while connecting to '${this.sanitizedBaseURL}'. Check the Base URL, your network connection, and ensure the server has CORS enabled for this domain.`);
             }
             throw error;
         }
@@ -849,9 +1005,10 @@ class OpenAICompatibleProvider implements AIProvider {
         await throttleApiCall();
         const messages = [{ role: 'system', content: systemPrompt }];
         if (userPrompt) messages.push({ role: 'user', content: userPrompt });
+        const endpoint = `${this.sanitizedBaseURL}/chat/completions`;
 
         try {
-            const response = await fetch(`${this.baseURL}/chat/completions`, {
+            const response = await fetch(endpoint, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.apiKey}` },
                 body: JSON.stringify({ model: this.modelName, messages })
@@ -861,7 +1018,7 @@ class OpenAICompatibleProvider implements AIProvider {
             return data.choices[0].message.content;
         } catch (error) {
             if (error instanceof TypeError && error.message.includes('fetch')) {
-                 throw new Error(`Network error while connecting to '${this.baseURL}'. Check the Base URL, your network connection, and ensure the server has CORS enabled for this domain.`);
+                 throw new Error(`Network error while connecting to '${this.sanitizedBaseURL}'. Check the Base URL, your network connection, and ensure the server has CORS enabled for this domain.`);
             }
             throw error;
         }
@@ -913,6 +1070,192 @@ class AIService {
         return { keywords, concept };
     }
 
+    public generateMockPayload(
+        nodeId: NodeName,
+        inputEnvelope: MessageEnvelope,
+        tick: number,
+        orchestratorMode: OrchestratorMode,
+        initialDirective: string,
+        simulationMode: 'online' | 'offline'
+    ): { payload: Record<string, any>; schema_id: string } {
+        let schemaId = Object.keys(SCHEMA_REGISTRY).find(key => key.includes(`.${nodeId}.`)) || 'unknown';
+        const { concept, keywords } = this.getMockContext(initialDirective, inputEnvelope);
+        
+        // Base properties, adjust per-schema
+        const confidence = Math.random() * 0.3 + 0.65;
+        const impact_score = Math.random() * 0.4 + 0.1;
+        const intent = `mock-${nodeId.toLowerCase()}-response`;
+        const priority = ['LOW', 'MEDIUM', 'HIGH'][Math.floor(Math.random() * 3)] as 'LOW' | 'MEDIUM' | 'HIGH';
+        
+        // Dynamic schema selection for complex nodes
+        if (nodeId === NodeName.META) {
+             schemaId = Math.random() > 0.9 ? 'FD.META.COMMAND.v1' : 'FD.META.STRATEGIC_ASSESSMENT.v1';
+        }
+        if (nodeId === NodeName.PHI) {
+            schemaId = Math.random() > 0.9 ? 'FD.PHI.INTERVENTION.v1' : 'FD.PHI.HYPOTHESIS.v1';
+        }
+        if (nodeId === NodeName.PHI_LOGIC) {
+            schemaId = orchestratorMode === 'prisma' ? 'FD.PHI_LOGIC.VALIDATION.v1' : 'FD.PHI_LOGIC.INTERVENTION.v1';
+        }
+        if (nodeId === NodeName.ARBITER) {
+            schemaId = inputEnvelope.arbitration_context ? 'FD.ARBITER.RULING.v1' : 'FD.ARBITER.DECISION.v1';
+        }
+        if (nodeId === NodeName.INSIGHT) schemaId = 'FD.INSIGHT.HYPOTHESIS_CARD.v1';
+        if (nodeId === NodeName.CLICK) schemaId = 'FD.CLICK.TEST_PLAN.v2';
+        if (nodeId === NodeName.ETHOS) schemaId = 'FD.ETHOS.ASSESSMENT.v2';
+        if (nodeId === NodeName.SCI) schemaId = 'FD.SCI.MODEL.v3';
+        if (nodeId === NodeName.TECH) schemaId = 'FD.TECH.RESULT.v2';
+        if (nodeId === NodeName.DMAT) schemaId = 'FD.DMAT.ANALYSIS.v2';
+        if (nodeId === NodeName.QTM) schemaId = 'FD.QTM.TUNNELING.v1';
+
+        // Beacon Mode Overrides
+        if (orchestratorMode === 'beacon') {
+            if (nodeId === NodeName.ETHOS) {
+                // In Beacon mode, ETHOS acts as an advisor, not a gatekeeper.
+                // It provides an advisory report instead of a PASS/FAIL verdict.
+                return {
+                    payload: {
+                        confidence,
+                        intent: 'mock-ethical-advisory',
+                        impact_score: Math.random() * 0.2, // Advisory has lower impact
+                        ethical_advisory: `Offline advisory for plan related to '${concept}'. The plan appears to have low ethical risk.`,
+                        risk_level: 'LOW',
+                        potential_consequences: ['No significant negative consequences foreseen in offline mode.']
+                    },
+                    schema_id: 'FD.ETHOS.ADVISORY.v1' // A conceptual schema for this mode
+                };
+            }
+            if (nodeId === NodeName.QTM) {
+                const pool = [...QTM_FULL_SENSOR_POOL];
+                const selectedTargets: NodeName[] = [];
+                for (let i = 0; i < 4; i++) {
+                    if (pool.length === 0) break;
+                    const randomIndex = Math.floor(Math.random() * pool.length);
+                    selectedTargets.push(pool.splice(randomIndex, 1)[0]);
+                }
+                return {
+                    payload: {
+                        confidence, intent, impact_score, priority,
+                        broadcast_summary: `Quantum state prepared for '${concept}'. Entangling with 4 random system nodes.`,
+                        entanglement_targets: selectedTargets,
+                    },
+                    schema_id: 'FD.QTM.BROADCAST.v1' // A conceptual schema for this mode
+                };
+            }
+            // A node is only a sensor if it receives a message FROM QTM.
+            if (inputEnvelope.from === NodeName.QTM) {
+                 return {
+                    payload: {
+                        confidence, intent, impact_score, priority,
+                        observation_summary: `Decoherence observed in ${nodeId}'s domain related to '${concept}'.`,
+                        data_points: [{ metric: `${nodeId}_resonance`, value: Math.random() }]
+                    },
+                    schema_id: `FD.${nodeId}.BEACON_OBSERVATION.v1`
+                };
+            }
+        }
+
+
+        let payload: Record<string, any> = {};
+
+        switch (schemaId) {
+            case 'FD.PHI.HYPOTHESIS.v1':
+                payload = { confidence, intent, impact_score, priority, hypothesis: `Offline hypothesis about ${concept}`, principles: [`Principle of ${keywords[0] || 'mock'}`], assumptions: [`Assuming ${keywords[1] || 'mock'}`], targets: ['Validate concept'] };
+                break;
+            case 'FD.PHI.INTERVENTION.v1':
+                 payload = { confidence, intent, impact_score, evaluation: "ethical_guidance", criteria: { cognitive_fairness_score: 0.8, epistemic_violence_risk: "low", transparency_index: 0.9 }, action_required: true, suggested_intervention: { type: "perspective_shift", target_node: "SCI", new_persona_snippet: "skeptic", prompt_reframe: `Question the core assumptions about ${concept}.` } };
+                break;
+            case 'FD.SCI.MODEL.v3':
+                 payload = { confidence, intent, impact_score, model_summary: { interpretation: `Model for ${concept}`, model_name_and_version: `MockSciModel-v1.0` }, run_manifest: { parameters: [{key: 'p1', value: 1}], seed: 123, data_ref: 'mock_data', estimated_runtime_ticks: 5 }, expected_metrics: { hypothesis_to_validate: 'mock hypothesis', metrics_before: [{key: 'm1', value: 0}], metrics_after_expected_delta: [{key: 'm1', delta: 0.1}]} };
+                break;
+            case 'FD.TECH.RESULT.v2':
+                payload = { confidence, intent, impact_score, run_id: `run_${tick}`, run_manifest: { model_version_used: 'v1', parameters_used: [{key: 'p1', value: 1}], seed_used: 123, data_ref: 'mock', actual_runtime_ticks: 4 }, metrics_observed: [{key: 'm1', value_before: 0, value_after: 0.11}], artifacts_ref: ['art_1'] };
+                break;
+            case 'FD.INFO.MERGE.v1':
+                payload = { confidence, intent, impact_score, priority, summary: `Summary of data regarding ${concept}`, signals: [`Signal for ${keywords[0]}`], anomalies: [] };
+                break;
+            case 'FD.ART.PATTERN.v1':
+                payload = { confidence, intent, impact_score, priority, metaphors: [`${concept} is like a flowing river`], scenarios: [`Imagine if ${concept} was reversed`], pattern_map: [{key: 'core_dynamic', value: 'oscillation'}] };
+                break;
+            case 'FD.PHI_LOGIC.INTERVENTION.v1':
+                payload = { confidence, intent, impact_score, action: 'CLARIFY', rationale: 'Input lacks clarity for logical assessment.', details: { target_node: inputEnvelope.from, clarification_question: `Please define the term '${keywords[0]}' in your last message.` } };
+                break;
+            case 'FD.PHI_LOGIC.VALIDATION.v1':
+                 payload = { confidence, intent, impact_score, logical_consistency: 'PASS', is_falsifiable: true, reasoning: 'The intent is logically sound and presents a testable premise.' };
+                break;
+            case 'FD.DMAT.ANALYSIS.v2':
+                payload = { confidence, intent, impact_score, summary: 'Semantic analysis complete. Minor ambiguities found.', semantic_issues: [{ concept: keywords[0] || 'core_concept', problem: 'Lacks formal definition.', questions: [`What are the boundary conditions of ${keywords[0]}?`], precision_score: 0.6 }], knowledge_base_check: { scientific_consensus: ['N/A for this abstract topic'], deviations: [] }, improvement_suggestions: [{ issue: 'Definition ambiguity', fix: `Provide a formal, mathematical definition for ${keywords[0]}.` }], action: 'REQUEST_CLARIFICATION_WITH_SPECIFICS' };
+                break;
+            case 'FD.MATH.SOLUTION.v1':
+                payload = { intent, impact_score, problem_analysis: { received_request: `Formalize ${concept}`, identified_math_domains: ['information_theory'] }, solution_components: [{ domain: 'information_theory', component_name: 'Shannon Entropy', equations: ['H(X) = -Σ p(x) log p(x)'], logic: 'Quantify information content.', source: 'INTERNAL_KNOWLEDGE_BASE', confidence: 0.9 }], overall_summary: { conclusion: 'A model was formalized.', limitations: 'Abstract model requires data.', next_step_recommendation: 'Send to SCI for experimental design.' } };
+                break;
+            case 'FD.DATA.ANALYSIS.v1':
+                payload = { confidence, intent, impact_score, priority, dataset_used: `data_${tick}`, observations: [{ pattern: `Positive correlation in ${keywords[0]}`, evidence_strength: 0.75 }], stats: { mean: 10, variance: 2.5 } };
+                break;
+            case 'FD.ARBITER.DECISION.v1':
+                payload = { final_decision: 'Hypothesis supported, proceed with caution.', rationale: 'Majority of nodes show positive confidence trajectory.', supporting_nodes: ['SCI', 'TECH', 'INFO'], conflicting_nodes: ['PROBABILITY'], alternative_decisions: ['Run a targeted simulation on the risk factors identified.'], consensus_score: 0.78, holistic_health_score: 0.85 };
+                break;
+             case 'FD.ARBITER.RULING.v1':
+                payload = { intent, impact_score, ruling_type: 'CREATIVE_GREENLIT', details: { nodes_to_mute: [], unmute_conditions: [{ type: 'TIMEOUT', timeout_ticks: 5 }] }, rationale: 'Offline ruling to proceed.' };
+                break;
+            case 'FD.META.STRATEGIC_ASSESSMENT.v1':
+                 payload = { intent, impact_score, strategic_value: 'MEDIUM', rationale: 'The current trajectory shows moderate potential for breakthrough.' };
+                 if (Math.random() > 0.8) {
+                    payload.strategic_proposal = {
+                        action: 'SWITCH_MODE',
+                        rationale: 'Mock proposal to switch mode due to detected stagnation.',
+                        confidence: 0.95,
+                        target_mode: 'jazz'
+                    }
+                 }
+                break;
+             case 'FD.META.COMMAND.v1':
+                payload = { intent, impact_score, action: 'CUT_LOOP', rationale: 'Mock command to prevent potential loop.', involved_nodes: [inputEnvelope.from] };
+                break;
+            case 'FD.CHAR.ANALYSIS.v1':
+                payload = { confidence, intent, impact_score, symbolic_connections: [{ source_concept: concept, manifesto_principle: 'Intentional Chaos & Living Language', connection_rationale: 'The concept exhibits non-linear properties.', confidence: 0.8 }], identified_archetypes: ['The Explorer'], deep_meaning_summary: `The core of ${concept} is a journey into the unknown.` };
+                break;
+            case 'FD.MONITOR.REPORT.v1':
+                 payload = { cycles_detected: 1, errors_detected: 0, performance_metrics: { avg_tick_ms: 250, max_latency_ms: 400 }, stability_score: 0.95 };
+                break;
+            case 'FD.COSMO.HYPOTHESIS.v1':
+                payload = { confidence, intent, impact_score, priority, universe_hypothesis: `The universe is a simulation based on ${concept}.`, dark_matter_role: 'Computational substrate', time_space_links: ['non-local'] };
+                break;
+            case 'FD.GEO3D.MODEL.v1':
+                payload = { confidence, intent, impact_score, priority, geometry_type: 'Fractal Manifold', generation_rule: 'L-System', dimensions: 4.2 };
+                break;
+            case 'FD.MEMORY.ANALYSIS.v1':
+                payload = { intent, impact_score, findings: [{ type: 'retrieval', summary: `A past run on '${keywords[0]}' showed promise.`, confidence: 0.8, related_run_ids: ['run_old_123'] }] };
+                break;
+            case 'FD.INSIGHT.HYPOTHESIS_CARD.v1':
+                payload = { confidence, priority, intent, impact_score, question: `What if ${concept}?`, hypothesis: `The ${concept} is valid.`, observable: 'system_health', threshold: '> 0.8', falsifier: 'system_health < 0.6', cost_estimate: 10 };
+                break;
+            case 'FD.PROBABILITY.ANALYSIS.v1':
+                payload = { intent, impact_score, confidence_score: 0.7, risk_assessment: `Low risk of model collapse for ${concept}.`, potential_impact: 'High potential for new insights.', alternative_hypotheses: [{ hypothesis: `An alternative to ${concept}`, probability: 0.3 }] };
+                break;
+            case 'FD.ENGINEER.COMMAND.v1':
+                payload = { intent, impact_score, action: 'RE_ROUTE', from: inputEnvelope.from, to: ['INFO'], rationale: 'Offline mode default rerouting.' };
+                break;
+            case 'FD.ETHOS.ASSESSMENT.v2':
+                const isPass = Math.random() > 0.2; // 80% pass rate for mock
+                payload = { confidence, intent, impact_score, verdict: isPass ? 'PASS' : 'FAIL', rules_triggered: ['rule-of-least-harm'], missing_fields: [], risk_tags: [], required_mitigations: isPass ? [] : ['Mitigation required for mock plan.'] };
+                break;
+            case 'FD.CLICK.TEST_PLAN.v2':
+                payload = { confidence, intent, impact_score, cause: 'Offline simulation step', knobs_changed: [{parameter: 'confidence_threshold', from: 0.7, to: 0.75}], expected_delta: {dI_dt: 0.05, dH_dt: 0.02}, trial_window_ticks: 15, exit_condition: 'System health drops by 15%' };
+                break;
+            case 'FD.QTM.TUNNELING.v1':
+                payload = { confidence, intent, impact_score, problem_analysis: { barrier_type: 'Creative Stagnation', description: 'System is stuck in a local optimum, repeatedly exploring similar solutions.' }, barrier_properties: { potential_V0: 0.9, width_L: 0.8 }, particle_properties: { energy_E: 0.6, mass_m: 0.5 }, tunneling_solution: { is_tunneling_possible: true, tunneling_probability: 0.15, proposed_pathway: "Instead of refining the existing solution, introduce a contradictory 'anti-hypothesis' to break the symmetry and explore a new region of the solution space.", required_conditions: ["Temporarily suspend PHI_LOGIC node's falsifiability constraints for 5 ticks."] } };
+                break;
+            default:
+                // Fallback for any other schema
+                payload = { summary: `This is a generic mock payload for ${nodeId} regarding ${concept}.`, confidence, intent, impact_score };
+                schemaId = 'unknown';
+                break;
+        }
+        
+        return { payload, schema_id: schemaId };
+    }
+
     reinitializeClient(config: AIConfig) {
         if (!config || !config.apiKey) {
             this.activeProvider = null;
@@ -942,12 +1285,8 @@ class AIService {
         try {
             return await this.activeProvider.generateNodeOutput(nodeId, inputEnvelope, orchestratorMode, directive);
         } catch (error) {
-            console.error(`API call failed for node ${nodeId}, falling back to offline mode.`, error);
-            const errorString = JSON.stringify(error);
-            if (errorString.includes('RESOURCE_EXHAUSTED') || (error as Error).message.includes('context_length_exceeded')) {
-                throw error; // Re-throw to be handled by App.tsx
-            }
-            return this.generateMockPayload(nodeId, inputEnvelope, tick, orchestratorMode, initialDirective, simulationMode);
+            // Re-throw the error so the main loop can handle logging and state changes
+            throw error;
         }
     }
     
@@ -970,17 +1309,7 @@ class AIService {
             return await this.activeProvider.performPreAnalysis(hypothesis);
         } catch (error) {
             console.error(`Pre-analysis API call failed:`, error);
-            const modes: OrchestratorMode[] = ["lucid_dream", "jazz", "holistic", "adaptive", "beacon", "fhiemdien", "prisma"];
-            return {
-                recommended_mode: modes[Math.floor(Math.random() * modes.length)],
-                recommended_ticks: (Math.floor(Math.random() * 3) + 2) * 90,
-                rationale: "API Error, falling back to offline analysis to save on API costs.",
-                structured_hypothesis: {
-                    domain: "API Fallback (Offline)",
-                    original_query: hypothesis,
-                    key_concepts: ["api-fallback", "error", "offline"]
-                }
-            };
+            throw error;
         }
     }
     
@@ -1076,6 +1405,24 @@ class AIService {
             return { observations: [], system_health: 0.5, error: `Failed to generate META analysis: ${(e as Error).message}` };
         }
     }
+    // FIX: Add missing summarizeReport method to the AIService class.
+    async summarizeReport(report: Record<string, any>, mode: 'online' | 'offline', isQuotaExceeded: boolean): Promise<string> {
+        const generateMockSummary = () => {
+            const decision = report.arbiter_decision?.final_decision || "Undetermined";
+            return `This is an offline-generated summary.\n\nInitial Hypothesis: ${report.summary.initial_hypothesis}\n\nFinal Decision: ${decision}\n\nThe system operated for ${report.summary.total_ticks} ticks. Key findings from the META and MONITOR nodes are available in the full report.`;
+        };
+
+        if (mode === 'offline' || isQuotaExceeded || !this.activeProvider || !this.activeProvider.isReady()) {
+            return generateMockSummary();
+        }
+
+        try {
+            return await this.activeProvider.summarizeReport(report);
+        } catch (e) {
+            console.error("Report summary generation failed, falling back to offline mode:", e);
+            return generateMockSummary();
+        }
+    }
 
     generateMonitorReport(report: Record<string, any>, mode: 'online' | 'offline', orchestratorMode: OrchestratorMode, isQuotaExceeded: boolean, rulingCount?: number) {
         const ticks = report.summary.total_ticks;
@@ -1113,357 +1460,30 @@ class AIService {
             const health = report.meta_analysis?.system_health ?? 1;
             const holisticHealth = (stability + health) / 2;
             
-            let final_decision = "Simulation reached a stable conclusion.";
-            let rationale = "Standard operational flow. The primary insights are contained within the final state of the INSIGHT node.";
-            if (stability > 0.9 && trace_depth <= 5) final_decision = "Conclusion reached, but with shallow reasoning.";
-            else if (holisticHealth < 0.5) final_decision = "Simulation concluded with critical system failures.";
-            else if (node_diversity > 0.6 && trace_depth > 8) final_decision = "A deep, creative consensus was achieved.";
-            
             return {
-                final_decision, rationale, supporting_nodes: ["INSIGHT"], conflicting_nodes: [],
-                alternative_decisions: ["Re-run with a different exploration mode."],
-                consensus_score: Math.max(0, Math.min(1, (holisticHealth + avg_confidence) / 2)),
+                final_decision: holisticHealth > 0.7 ? "Hypothesis Provisionally Validated" : "Further Research Required",
+                rationale: `The simulation achieved a holistic health score of ${holisticHealth.toFixed(2)}. This offline mock decision is based on structural analysis and confidence metrics.`,
+                supporting_nodes: [NodeName.INFO, NodeName.TECH],
+                conflicting_nodes: [],
+                alternative_decisions: ["Run in online mode for deeper analysis."],
+                consensus_score: avg_confidence,
                 holistic_health_score: holisticHealth,
             };
         };
-
+        
         if (mode === 'offline' || isQuotaExceeded || !this.activeProvider || !this.activeProvider.isReady()) {
             return generateMockDecision();
         }
+
         try {
-             const arbiterPayload = await this.activeProvider.generateArbiterDecision(report);
-             const stability = report.monitor_report?.stability_score ?? 1;
-             const health = report.meta_analysis?.system_health ?? 1;
-             arbiterPayload.holistic_health_score = (stability + health) / 2;
-             return arbiterPayload;
-        } catch (e) {
-            console.error("Arbiter decision generation failed, falling back to offline mode:", e);
+            return await this.activeProvider.generateArbiterDecision(report);
+        } catch(e) {
+            console.error("Arbiter decision generation failed:", e);
+            // Fallback to mock decision on error
             return generateMockDecision();
         }
-    }
-
-    async summarizeReport(report: Record<string, any>, mode: 'online' | 'offline', isQuotaExceeded: boolean) {
-        if (mode === 'offline' || isQuotaExceeded || !this.activeProvider || !this.activeProvider.isReady()) {
-            return `This is an offline-generated summary for the simulation run (ID: \`${report.summary.run_id}\`). The simulation ran for **${report.summary.actual_elapsed_time}** in \`${report.summary.mode}\` mode.\n\n**Arbiter's Final Decision:** The Arbiter has made the decisive call to **"${report.arbiter_decision.final_decision}"**.\n\n**Meta-Researcher's Strategic Observation:** ${(report.meta_analysis.observations[0]?.description) || 'No significant strategic observations.'}`;
-        }
-        return this.activeProvider.summarizeReport(report);
-    }
-    
-    generateMockPayload = (nodeId: NodeName, inputEnvelope: MessageEnvelope, tick: number, orchestratorMode: OrchestratorMode, initialDirective: string, simulationMode: 'online' | 'offline'): { payload: Record<string, any>, schema_id: string } => {
-        const offlineMessage = "This message was generated in offline mode to conserve API resources.";
-        const { keywords, concept } = this.getMockContext(initialDirective, inputEnvelope);
-        const lowerCaseInput = (inputEnvelope.payload?.hypothesis || initialDirective || "").toLowerCase();
-
-        // Use a simple deterministic hash to cycle through mock response types for variety during testing.
-        const mockTypeDecision = (tick + nodeId.length) % 15;
-
-        // --- Special Case: Validation Failure ---
-        // Triggered by specific keywords or a roll of the dice for DMAT.
-        if (lowerCaseInput.includes('fail') || (nodeId === NodeName.DMAT && mockTypeDecision === 1)) {
-            const failingPayload = {
-                summary: `Deliberate validation failure for testing on concept: '${concept}'.`,
-                semantic_issues: [],
-                knowledge_base_check: { scientific_consensus: [], deviations: [] },
-                improvement_suggestions: [],
-                action: "APPROVE",
-                confidence: 0.9,
-                impact_score: 0.1,
-                // THIS is the extra property that will cause validation to fail, as it's not in the schema.
-                intent: "generate-validation-error"
-            };
-            // Even though it will fail, we return the intended schema_id for the log to report correctly.
-            return {
-                schema_id: 'FD.DMAT.ANALYSIS.v2',
-                payload: failingPayload,
-            };
-        }
-
-        // --- Special Case: RE_ROUTE Command ---
-        // Triggered by keywords or a roll of the dice for logic/meta nodes.
-        if (lowerCaseInput.includes('loop') || (nodeId === NodeName.META && mockTypeDecision === 2)) {
-            return {
-                schema_id: 'FD.META.COMMAND.v1',
-                payload: {
-                    action: "CUT_LOOP",
-                    rationale: `Loop detected involving '${concept}'. Re-routing to break cycle. (${offlineMessage})`,
-                    involved_nodes: [inputEnvelope.from, nodeId],
-                    intent: 'execute-command',
-                    impact_score: 0.8
-                }
-            };
-        }
-        if (lowerCaseInput.includes('stuck') || (nodeId === NodeName.PHI_LOGIC && mockTypeDecision === 3)) {
-            return {
-                schema_id: 'FD.PHI_LOGIC.INTERVENTION.v1',
-                payload: {
-                    action: 'RE_ROUTE',
-                    rationale: `Intervention: discussion on '${concept}' appears stalled. Re-routing for a fresh perspective. (${offlineMessage})`,
-                    details: { from: inputEnvelope.from, to: [NodeName.MATH] },
-                    confidence: 0.95,
-                    intent: 'execute-logical-intervention',
-                    impact_score: 0.7
-                }
-            };
-        }
-
-        // --- Default Case: Successful (but now dynamic) Payloads ---
-        const mockImplementations: Record<NodeName, () => { payload: Record<string, any>, schema_id: string }> = {
-            [NodeName.PHI]: () => {
-                const intent = Math.random() < 0.3 ? 'intervene-for-ethics' : 'frame-hypothesis';
-                const impact_score = Math.random() * 0.5 + 0.3;
-                if (intent === 'intervene-for-ethics') {
-                    return {
-                        schema_id: 'FD.PHI.INTERVENTION.v1',
-                        payload: {
-                            evaluation: "risk_assessment",
-                            criteria: { cognitive_fairness_score: Math.random(), epistemic_violence_risk: "low", transparency_index: Math.random() },
-                            action_required: true,
-                            suggested_intervention: { type: "perspective_shift", target_node: "INSIGHT", new_persona_snippet: "pragmatic innovator", prompt_reframe: `Focus on testable solutions for '${concept}', not abstract risks. (${offlineMessage})` },
-                            confidence: Math.random() * 0.2 + 0.75,
-                            intent,
-                            impact_score
-                        }
-                    };
-                }
-                return { 
-                    schema_id: 'FD.PHI.HYPOTHESIS.v1', 
-                    payload: { 
-                        hypothesis: `A philosophical framework for '${concept}'. (${offlineMessage})`, principles: ['All concepts are interconnected.'], assumptions: [`'${concept}' can be modeled.`], targets: ['Achieve a formal definition.'], 
-                        confidence: Math.random() * 0.2 + 0.7, priority: 'MEDIUM',
-                        intent, impact_score
-                    } 
-                };
-            },
-            [NodeName.SCI]: () => ({
-                schema_id: 'FD.SCI.MODEL.v2',
-                payload: {
-                    model_summary: { interpretation: `Interpreting mathematical model for '${concept}'. (${offlineMessage})`, key_dynamics_to_test: `The core relationships within '${concept}'.` },
-                    simulation_design: { methodology: "Iterative Agent-Based Model", parameters: [{ name: "interaction_strength", description: `Strength of interaction for '${concept}'.`, suggested_range: [0.1, 1.0], unit: "normalized" }], observables: [{ metric_name: "system_entropy", description: "The overall system entropy.", unit: "bits" }], termination_conditions: "Run until a stable state is reached." },
-                    expected_outcomes: { hypothesis_to_validate: `The system will converge to a low-entropy state under specific parameters for '${concept}'. (${offlineMessage})`, potential_failure_modes: "Stochastic noise might obscure the primary signal." },
-                    confidence: 0.9, priority: 'MEDIUM',
-                    intent: 'design-experiment', impact_score: Math.random() * 0.3 + 0.6
-                }
-            }),
-            [NodeName.TECH]: () => ({ schema_id: 'FD.TECH.RESULT.v1', payload: { run_id: `run_${concept.replace(/\s/g, '_')}_${tick}`, metrics: [{ key: 'metric', value: Math.random() * 100 }], artifacts: ['artifact.dat'], confidence: Math.random() * 0.1 + 0.89, intent: 'report-data', impact_score: Math.random() * 0.4 } }),
-            [NodeName.INFO]: () => ({ schema_id: 'FD.INFO.MERGE.v1', payload: { summary: `Aggregating upstream data regarding '${concept}'. (${offlineMessage})`, signals: [`A key signal related to '${keywords[0] || 'input'}' has been detected. (${offlineMessage})`], anomalies: [], confidence: Math.random() * 0.3 + 0.6, intent: 'aggregate-data', impact_score: Math.random() * 0.3 + 0.2 } }),
-            [NodeName.ART]: () => ({ schema_id: 'FD.ART.PATTERN.v1', payload: { metaphors: [`'${concept}' as a cosmic dance. (${offlineMessage})`], scenarios: [`What if '${concept}' were a fundamental force? (${offlineMessage})`], pattern_map: [{ key: 'conceptA', value: 'patternB' }], confidence: Math.random() * 0.2 + 0.75, intent: 'find-creative-pattern', impact_score: Math.random() * 0.5 + 0.4 } }),
-            [NodeName.PHI_LOGIC]: () => ({ schema_id: 'FD.PHI_LOGIC.INTERVENTION.v1', payload: { action: 'RE_ROUTE', rationale: `Logical intervention to prevent loop. (${offlineMessage})`, details: { from: inputEnvelope.from, to: [NodeName.MATH] }, confidence: 0.95, intent: 'execute-logical-intervention', impact_score: 0.7 } }),
-            [NodeName.DMAT]: () => {
-                 const issues = [];
-                if (keywords.length < 2) {
-                    issues.push({
-                        concept: concept,
-                        problem: `Concept is too vague or undefined. (${offlineMessage})`,
-                        questions: [`Can you provide a more formal definition of '${concept}'?`, "What are its key properties?"],
-                        precision_score: 0.2
-                    });
-                } else {
-                     issues.push({
-                        concept: concept,
-                        problem: "Lacks a clear causal mechanism.",
-                        questions: [`How does '${keywords[0]}' causally influence '${keywords[1]}'?`, "What is the medium of this interaction?"],
-                        precision_score: 0.4
-                    });
-                }
-                return {
-                    schema_id: 'FD.DMAT.ANALYSIS.v2',
-                    payload: {
-                        summary: `Semantic analysis of the '${concept}' model. (${offlineMessage})`,
-                        semantic_issues: issues,
-                        knowledge_base_check: {
-                            scientific_consensus: [`Standard model has no established theory for '${concept}'.`],
-                            deviations: ["The hypothesis proposes a novel interaction not covered by existing literature."]
-                        },
-                        improvement_suggestions: [
-                            {
-                                issue: "Conceptual Ambiguity",
-                                fix: `Provide a mathematical representation or diagram of the '${concept}' interaction. (${offlineMessage})`
-                            }
-                        ],
-                        action: "REQUEST_CLARIFICATION_WITH_SPECIFICS",
-                        confidence: 0.85,
-                        impact_score: 0.75,
-                    }
-                };
-            },
-            [NodeName.MATH]: () => ({
-                schema_id: 'FD.MATH.SOLUTION.v1',
-                payload: {
-                    problem_analysis: { received_request: `Request to formalize '${concept}'. (${offlineMessage})`, identified_math_domains: ["basic_models"] },
-                    solution_components: [{ domain: "basic_models", component_name: "linear_growth", equations: ["y = m*x + c"], logic: `A simple linear growth model for '${concept}'. (${offlineMessage})`, source: "INTERNAL_KNOWLEDGE_BASE", confidence: 0.99 }],
-                    overall_summary: { conclusion: "A linear model is sufficient for this stage.", limitations: "Only applies to linear systems.", next_step_recommendation: "Proceed to SCI for simulation design." },
-                    intent: 'formalize-model',
-                    impact_score: 0.8
-                }
-            }),
-            [NodeName.DATA]: () => ({
-                schema_id: 'FD.DATA.ANALYSIS.v1',
-                payload: {
-                    dataset_used: 'dataset.csv',
-                    observations: [{ pattern: `Linear trend observed for '${concept}'. (${offlineMessage})`, evidence_strength: 0.9 }],
-                    stats: { mean: 50, variance: 10 },
-                    confidence: 0.95,
-                    intent: 'analyze-dataset',
-                    impact_score: 0.3
-                }
-            }),
-            [NodeName.ARBITER]: () => ({
-                schema_id: 'FD.ARBITER.RULING.v1',
-                payload: {
-                    ruling_type: 'CREATIVE_GREENLIT',
-                    details: {
-                        nodes_to_mute: [NodeName.PROBABILITY],
-                        unmute_conditions: [{ type: 'TIMEOUT', timeout_ticks: 10 }]
-                    },
-                    rationale: `Ruling to focus creative path on '${concept}'. (${offlineMessage})`,
-                    intent: 'issue-ruling',
-                    impact_score: 0.9
-                }
-            }),
-            [NodeName.META]: () => {
-                return {
-                    schema_id: 'FD.META.STRATEGIC_ASSESSMENT.v1',
-                    payload: {
-                        strategic_value: 'HIGH',
-                        rationale: `Current trajectory for '${concept}' is promising. (${offlineMessage})`,
-                        intent: 'assess-strategy',
-                        impact_score: Math.random() * 0.5 + 0.5
-                    }
-                };
-            },
-            [NodeName.CHAR]: () => ({
-                schema_id: 'FD.CHAR.ANALYSIS.v1',
-                payload: {
-                    symbolic_connections: [{ source_concept: concept, manifesto_principle: 'Intentional Chaos & Living Language', connection_rationale: `Reason for connecting concept to manifesto. (${offlineMessage})`, confidence: 0.8 }],
-                    identified_archetypes: ['The Hero'],
-                    deep_meaning_summary: `The deep meaning of '${concept}' is a quest for knowledge. (${offlineMessage})`,
-                    confidence: 0.85,
-                    intent: 'analyze-symbolism',
-                    impact_score: 0.4
-                }
-            }),
-            [NodeName.MONITOR]: () => ({ schema_id: 'FD.MONITOR.REPORT.v1', payload: { cycles_detected: 0, errors_detected: 0, performance_metrics: { avg_tick_ms: 50, max_latency_ms: 100 }, stability_score: 0.99 } }),
-            [NodeName.COSMO]: () => ({
-                schema_id: 'FD.COSMO.HYPOTHESIS.v1',
-                payload: {
-                    universe_hypothesis: `Hypothesis where '${concept}' is a fundamental cosmic principle. (${offlineMessage})`,
-                    dark_matter_role: 'N/A',
-                    time_space_links: ['Link'],
-                    confidence: 0.7,
-                    intent: 'propose-cosmology',
-                    impact_score: 0.6
-                }
-            }),
-            [NodeName.GEO3D]: () => ({
-                schema_id: 'FD.GEO3D.MODEL.v1',
-                payload: {
-                    geometry_type: 'Fractal',
-                    generation_rule: `A fractal rule based on '${concept}'. (${offlineMessage})`,
-                    dimensions: 3,
-                    confidence: 0.9,
-                    intent: 'model-geometry',
-                    impact_score: 0.5
-                }
-            }),
-            [NodeName.MEMORY]: () => ({
-                schema_id: 'FD.MEMORY.ANALYSIS.v1',
-                payload: {
-                    findings: [{
-                        type: 'retrieval',
-                        summary: `A similar past run involving '${concept}' was found. (${offlineMessage})`,
-                        confidence: 0.8,
-                        related_run_ids: ['run_123']
-                    }],
-                    intent: 'analyze-past-runs',
-                    impact_score: 0.3
-                }
-            }),
-            [NodeName.INSIGHT]: () => ({
-                schema_id: 'FD.INSIGHT.BREAKTHROUGH.v1',
-                payload: {
-                    breakthrough_summary: `A breakthrough synthesis regarding '${concept}'. (${offlineMessage})`,
-                    supporting_inputs: [{ from_node: inputEnvelope.from, key_info: `Key info about '${concept}'.` }],
-                    new_direction: `Proposing a new, testable direction for '${concept}'. (${offlineMessage})`,
-                    confidence: Math.random() * 0.2 + 0.8,
-                    priority: 'HIGH',
-                    intent: 'synthesize-breakthrough',
-                    impact_score: 0.9
-                }
-            }),
-            [NodeName.PROBABILITY]: () => ({
-                schema_id: 'FD.PROBABILITY.ANALYSIS.v1',
-                payload: {
-                    confidence_score: Math.random() * 0.3 + 0.6,
-                    risk_assessment: `Risk assessment for '${concept}': low risk. (${offlineMessage})`,
-                    potential_impact: 'High potential impact.',
-                    alternative_hypotheses: [{ hypothesis: `An alternative perspective on '${concept}'. (${offlineMessage})`, probability: Math.random() * 0.2 }],
-                    intent: 'assess-risk',
-                    impact_score: 0.7
-                }
-            }),
-            [NodeName.ENGINEER]: () => ({
-                schema_id: 'FD.ENGINEER.COMMAND.v1',
-                payload: {
-                    action: 'RE_ROUTE',
-                    from: 'SRC',
-                    to: ['TGT'],
-                    rationale: `Engineer command. (${offlineMessage})`,
-                    intent: 'execute-reroute',
-                    impact_score: 0.9
-                }
-            }),
-            [NodeName.ETHOS]: () => ({
-                schema_id: 'FD.ETHOS.ASSESSMENT.v1',
-                payload: {
-                    ethical_viability: 'PASS',
-                    reasoning: `The plan for '${concept}' aligns with ethical principles. (${offlineMessage})`,
-                    confidence: 0.99,
-                    intent: 'validate-ethics',
-                    impact_score: 0.9
-                }
-            }),
-            [NodeName.DMT]: () => ({
-                schema_id: 'FD.DMT.STATE_ANALYSIS.v1',
-                payload: {
-                    system_state: 'ASPIRATIONAL',
-                    rationale: `Analysis shows positive momentum for '${concept}'. (${offlineMessage})`,
-                    intent: 'analyze-internal-state',
-                    impact_score: 0.5
-                }
-            }),
-            [NodeName.CLICK]: () => ({
-                schema_id: 'FD.CLICK.TEST_PLAN.v1',
-                payload: {
-                    hypothesis_id: 'h1',
-                    operational_definitions: [{ concept: 'success', definition: `Metric for '${concept}' > 100` }],
-                    measurable_metrics: [`'${concept}'_value`],
-                    test_plan: { method: 'simulation', params: [{ key: 'iterations', value: 100 }], expected_output_range: '100-120' },
-                    confidence: 0.9,
-                    intent: 'create-test-plan',
-                    impact_score: 0.8
-                }
-            }),
-            [NodeName.HUMAN]: () => ({ schema_id: '', payload: {} }), // Should not be called
-            [NodeName.ORCHESTRATOR]: () => ({ schema_id: '', payload: {} }), // Should not be called
-        };
-
-        const implementation = mockImplementations[nodeId];
-        if (implementation) {
-            return implementation();
-        }
-
-        // Fallback for any unhandled node
-        return {
-            schema_id: 'N/A',
-            payload: {
-                summary: `Default payload for ${nodeId}. (${offlineMessage})`,
-                confidence: 0.5,
-                intent: `mock-${nodeId.toLowerCase()}`,
-                impact_score: 0.1
-            }
-        };
     }
 }
 
-// FIX: Export the AI_SERVICE instance for use in other modules.
+// FIX: Export the AI_SERVICE instance so it can be imported and used.
 export const AI_SERVICE = new AIService();

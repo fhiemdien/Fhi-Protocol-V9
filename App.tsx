@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import NodeMatrix from './components/NodeMatrix';
 import TimelineControls from './components/TimelineControls';
@@ -10,7 +9,7 @@ import ApiKeyModal from './components/ApiKeyModal';
 import ReportModeModal from './components/ReportModeModal'; // New Import
 // FIX: Import GavelIcon to be used in the Arbitration overlay.
 import { GavelIcon } from './components/icons';
-import { NODES, ROUTING_MATRIX, BEACON_ROUTING_MATRIX, LUCID_DREAM_ROUTING_MATRIX, FHIEMDIEN_ROUTING_MATRIX, PRISMA_ROUTING_MATRIX, HOLISTIC_ROUTING_MATRIX, APP_VERSION, APP_CODENAME, NODE_ALIASES } from './constants';
+import { NODES, ROUTING_MATRIX, BEACON_ROUTING_MATRIX, LUCID_DREAM_ROUTING_MATRIX, FHIEMDIEN_ROUTING_MATRIX, PRISMA_ROUTING_MATRIX, HOLISTIC_ROUTING_MATRIX, APP_VERSION, APP_CODENAME, NODE_ALIASES, QTM_FULL_SENSOR_POOL } from './constants';
 import type { Node, MessageEnvelope, ActiveTransition, OrchestratorMode as OrchestratorModeType, ControlMode, StrategicProposal, AIConfig, RemediationContext, MutedNodesInfo, EmergenceDataLog, ArbitrationRuling, UnmuteCondition, ArbitrationPayload } from './types';
 import { NodeName } from './types';
 import { AI_SERVICE, calculateInterimStatus, resetApiGovernor } from './services/aiService';
@@ -208,6 +207,7 @@ const App: React.FC = () => {
   const remediationFeedbackRef = useRef<Record<string, any[]>>({});
   const [mutedNodesInfo, setMutedNodesInfo] = useState<MutedNodesInfo | null>(null);
   const [isArbitrationActive, setIsArbitrationActive] = useState<boolean>(false);
+  const [systemTerminationReportOptions, setSystemTerminationReportOptions] = useState<any>(null);
 
   const simulationStartTimeRef = useRef<number | null>(null);
   const initialDirectiveRef = useRef<string>('');
@@ -215,12 +215,16 @@ const App: React.FC = () => {
   const lastTestPlanTickRef = useRef<number>(0);
   const modeTheme = ORCHESTRATOR_MODE_THEMES[orchestratorMode];
   const emergenceDataLogRef = useRef<EmergenceDataLog>({ payloads: [], confidenceTrajectory: [], adaptiveActions: [] });
-  const cognitiveLoadRef = useRef({ messagesThisTick: 0, errorsThisTick: 0, lastTick: -1 });
+  const cognitiveLoadRef = useRef({ messagesThisTick: 0, lastTick: -1 });
   const throttledNodesRef = useRef<Set<NodeName>>(new Set());
   const cycleCountRef = useRef<number>(0); // Number of ARBITER rulings in Beacon mode
   const arbitrationTriggersRef = useRef<Record<string, { count: number; lastTick: number }>>({});
   const directivesRef = useRef<Record<string, string>>({});
   const activeFeedbackLoopsRef = useRef<any[]>([]);
+  const networkErrorTrackerRef = useRef<Record<string, boolean>>({});
+  const consecutiveStallCountRef = useRef<number>(0);
+  const infoLoopTrackerRef = useRef({ count: 0, startHealth: 1.0 });
+  const errorHistoryRef = useRef<number[]>([]);
 
 
   const baseMaxTicks = useMemo(() => {
@@ -285,6 +289,7 @@ const App: React.FC = () => {
           setCurrentRunMaxTicks(savedState.currentRunMaxTicks || baseMaxTicks);
           executedCommandsRef.current = new Set(savedState.executedCommands || []);
           emergenceDataLogRef.current = savedState.emergenceDataLog || { payloads: [], confidenceTrajectory: [], adaptiveActions: [] };
+          errorHistoryRef.current = savedState.errorHistory || [];
           setIsPlaying(false); // Always start paused for safety
 
           setTimeout(() => {
@@ -680,10 +685,12 @@ const App: React.FC = () => {
               'SYSTEM_ERROR',
               fromNode
            );
-           await generateReport({ isFinal: true, integrityAbort: true, rationale: proposal.rationale, reportGenerationMode: 'offline' });
+           // Store context for the report modal and then open it.
+           setSystemTerminationReportOptions({ integrityAbort: true, rationale: proposal.rationale });
+           setIsReportModeModalOpen(true);
            break;
       }
-    }, [addSystemLog, generateReport]);
+    }, [addSystemLog]);
 
   const resetSimulation = useCallback(() => {
     setIsPlaying(false);
@@ -706,17 +713,21 @@ const App: React.FC = () => {
     setDynamicRoutingMatrix({...ROUTING_MATRIX});
     setTaskForce(null);
     resetApiGovernor();
+    networkErrorTrackerRef.current = {};
     localStorage.removeItem(SIMULATION_STATE_KEY);
     setMutedNodesInfo(null);
     cycleCountRef.current = 0;
     lastTestPlanTickRef.current = 0;
     emergenceDataLogRef.current = { payloads: [], confidenceTrajectory: [], adaptiveActions: [] };
-    cognitiveLoadRef.current = { messagesThisTick: 0, errorsThisTick: 0, lastTick: -1 };
+    cognitiveLoadRef.current = { messagesThisTick: 0, lastTick: -1 };
     throttledNodesRef.current.clear();
     arbitrationTriggersRef.current = {};
     setIsArbitrationActive(false);
     directivesRef.current = {};
     activeFeedbackLoopsRef.current = [];
+    consecutiveStallCountRef.current = 0;
+    infoLoopTrackerRef.current = { count: 0, startHealth: 1.0 };
+    errorHistoryRef.current = [];
   }, []);
 
     const handleClearMemory = useCallback(() => {
@@ -791,7 +802,13 @@ const App: React.FC = () => {
             let tempRoutingMatrix = { ...baseMatrix };
             
             if (applyLearnedConfiguration && hasLearnedRouting) {
-                if (newOrchestratorMode === 'holistic') {
+                if (newOrchestratorMode === 'beacon') {
+                    addSystemLog(
+                        'Learned Routing Skipped', 
+                        { details: 'Apply Learning is not applicable in Beacon Mode to preserve its fixed communication protocol.' }, 
+                        'SYSTEM_OK'
+                    );
+                } else if (newOrchestratorMode === 'holistic') {
                     addSystemLog('Learned Routing Skipped', { details: 'Temporarily disabled in Holistic mode based on forensic analysis to prevent known loop conditions.' }, 'SYSTEM_OK');
                 } else {
                     try {
@@ -928,7 +945,13 @@ const App: React.FC = () => {
         let tempRoutingMatrix = { ...baseMatrix };
         
         if (applyLearnedConfiguration && hasLearnedRouting) {
-            if (newOrchestratorMode === 'holistic') {
+            if (newOrchestratorMode === 'beacon') {
+                addSystemLog(
+                    'Learned Routing Skipped', 
+                    { details: 'Apply Learning is not applicable in Beacon Mode to preserve its fixed communication protocol.' }, 
+                    'SYSTEM_OK'
+                );
+            } else if (newOrchestratorMode === 'holistic') {
                 addSystemLog('Learned Routing Skipped', { details: 'Temporarily disabled in Holistic mode based on forensic analysis to prevent known loop conditions.' }, 'SYSTEM_OK');
             } else {
                 try {
@@ -1071,27 +1094,44 @@ const App: React.FC = () => {
         const activeLoops = activeFeedbackLoopsRef.current;
         if (activeLoops.length === 0) return;
 
-        // Simplified check for convergence stall (threshold lowered based on forensic analysis)
         const healthHistory = emergenceDataLogRef.current.confidenceTrajectory;
-        if (healthHistory.length > 10) { // Was 15
-            const lastTen = healthHistory.slice(-10); // Was lastFifteen
-            const variance = lastTen.reduce((acc, val, _, arr) => acc + Math.pow(val - (arr.reduce((a, b) => a + b, 0) / arr.length), 2), 0) / 10; // was 15
-            
-            // If health is stable (low variance), a stall might be happening
-            if (variance < 0.001) { 
-                const stalledLoop = activeLoops.find(l => l.trigger_on?.convergence_stall);
-                if (stalledLoop) {
-                    activeFeedbackLoopsRef.current = activeFeedbackLoopsRef.current.filter(l => l !== stalledLoop); // Consume the loop
-                    addSystemLog(`[FEEDBACK LOOP] Triggered: Convergence Stall Detected`, { protocol: stalledLoop.response_protocol }, 'COMMAND', NodeName.CLICK);
-                    
-                    // Execute response protocol
-                    if (stalledLoop.response_protocol === 'switch_to_fractal_mode') {
-                        setOrchestratorMode('fhiemdien'); // 'fhiemdien' is a good proxy for a fractal/geometric mode
-                         addSystemLog(`[FEEDBACK LOOP] Action: Switched orchestrator mode to 'fhiemdien' to break stall.`, {}, 'SYSTEM_OK');
-                    }
-                }
+        let isStalled = false;
+
+        if (healthHistory.length > 10) {
+            const lastTen = healthHistory.slice(-10);
+            const variance = lastTen.reduce((acc, val, _, arr) => acc + Math.pow(val - (arr.reduce((a, b) => a + b, 0) / arr.length), 2), 0) / 10;
+            if (variance < 0.001) {
+                isStalled = true;
             }
         }
+        
+        if (isStalled) {
+            consecutiveStallCountRef.current++;
+            const stalledLoop = activeLoops.find(l => l.trigger_on?.convergence_stall);
+            if (stalledLoop) {
+                activeFeedbackLoopsRef.current = activeFeedbackLoopsRef.current.filter(l => l !== stalledLoop);
+                addSystemLog(`[FEEDBACK LOOP] Triggered: Convergence Stall Detected`, { protocol: stalledLoop.response_protocol, consecutive_stalls: consecutiveStallCountRef.current }, 'COMMAND', NodeName.CLICK);
+
+                if (consecutiveStallCountRef.current >= 3) {
+                    addSystemLog(`CLICK Escalation Protocol: Stall Alert`, { details: `System failed to break convergence stall after 3 attempts. Alerting META.` }, 'SYSTEM_ERROR', NodeName.CLICK);
+                    const alertMessage: MessageEnvelope = {
+                        msg_id: `stall_alert_${Date.now()}`, from: NodeName.CLICK, to: [NodeName.META],
+                        ts: new Date().toISOString(), timeline: timelineRef.current, schema_id: 'N/A',
+                        payload: { instruction: "CRITICAL STALL DETECTED. The system has failed to break a convergence stall after 3 consecutive attempts by CLICK. A strategic intervention (e.g., CUT_LOOP) is required.", consecutive_stalls: 3 },
+                        trace: { parent: null, path: [NodeName.CLICK] }, validation: { schema_ok: true, errors: [] },
+                        tick: tickRef.current, priority: 'HIGH', goldenThread: initialDirectiveRef.current,
+                    };
+                    messageQueueRef.current.unshift(alertMessage);
+                    consecutiveStallCountRef.current = 0; // Reset counter after escalation
+                } else if (stalledLoop.response_protocol === 'switch_to_fractal_mode') {
+                    setOrchestratorMode('fhiemdien');
+                    addSystemLog(`[FEEDBACK LOOP] Action: Switched orchestrator mode to 'fhiemdien' to break stall.`, {}, 'SYSTEM_OK');
+                }
+            }
+        } else {
+            consecutiveStallCountRef.current = 0; // Reset if not stalled
+        }
+
     }, [addSystemLog]);
 
   const processQueue = useCallback(async () => {
@@ -1101,7 +1141,7 @@ const App: React.FC = () => {
 
     // Cognitive Load Governor: Reset per-tick counters
     if (tickRef.current !== cognitiveLoadRef.current.lastTick) {
-        cognitiveLoadRef.current = { messagesThisTick: 0, errorsThisTick: 0, lastTick: tickRef.current };
+        cognitiveLoadRef.current = { messagesThisTick: 0, lastTick: tickRef.current };
     }
 
     if (tickRef.current >= currentRunMaxTicks) {
@@ -1112,14 +1152,10 @@ const App: React.FC = () => {
         return 0; // Return delay
     }
 
-    // If queue is empty, just wait for the next iteration of the loop.
-    // This allows time for processing nodes to finish or for feedback loops (like ARBITER in beacon mode)
-    // to generate new messages. The simulation will continue as long as isPlaying is true.
     if (messageQueueRef.current.length === 0) {
         return STANDARD_TICK_INTERVAL_MS;
     }
     
-    // Universal Intelligent Prioritization (Phase 3 Upgrade)
     messageQueueRef.current.sort((a, b) => {
         const priorityMap = { 'HIGH': 3, 'MEDIUM': 2, 'LOW': 1 };
         const scoreA = (priorityMap[a.priority || 'LOW'] || 0) + (a.payload.impact_score || 0);
@@ -1127,70 +1163,73 @@ const App: React.FC = () => {
         return scoreB - scoreA;
     });
 
-
-    // Adaptive Mode: Experiment Manager
     if (orchestratorModeRef.current === 'adaptive' && (tickRef.current - lastTestPlanTickRef.current) > 10) {
         addSystemLog('Experiment Manager Triggered', { detail: 'No test plan executed for 10 ticks. Prompting CLICK.' }, 'SYSTEM_OK');
         const promptToClick: MessageEnvelope = {
-            msg_id: `orchestrator_prompt_click_${Date.now()}`,
-            from: NodeName.ORCHESTRATOR,
-            to: [NodeName.CLICK],
-            ts: new Date().toISOString(),
-            timeline: timelineRef.current,
-            schema_id: 'N/A',
-            payload: {
-                instruction: "System has been idle without a test plan for 10 ticks. Based on recent message history, formulate and propose a new, concrete TEST_PLAN.",
-                recent_messages: messagesRef.current.slice(-5) // Provide context
-            },
-            trace: { parent: null, path: [NodeName.ORCHESTRATOR] },
-            validation: { schema_ok: true, errors: [] },
-            tick: tickRef.current,
-            priority: 'HIGH',
-            goldenThread: initialDirectiveRef.current,
+            msg_id: `orchestrator_prompt_click_${Date.now()}`, from: NodeName.ORCHESTRATOR, to: [NodeName.CLICK],
+            ts: new Date().toISOString(), timeline: timelineRef.current, schema_id: 'N/A',
+            payload: { instruction: "System has been idle without a test plan for 10 ticks. Based on recent message history, formulate and propose a new, concrete TEST_PLAN.", recent_messages: messagesRef.current.slice(-5) },
+            trace: { parent: null, path: [NodeName.ORCHESTRATOR] }, validation: { schema_ok: true, errors: [] },
+            tick: tickRef.current, priority: 'HIGH', goldenThread: initialDirectiveRef.current,
         };
         messageQueueRef.current.unshift(promptToClick);
         lastTestPlanTickRef.current = tickRef.current; // Reset timer
     }
     
-    // Adaptive Mode: Check if muted nodes should be un-muted
     if (mutedNodesInfo && tickRef.current >= (mutedNodesInfo.muteUntilTick || Infinity)) {
         addSystemLog('Logical Guardrail Lifted', { nodes: mutedNodesInfo.nodes, reason: 'Mute duration expired.' }, 'SYSTEM_OK');
         setMutedNodesInfo(null);
     }
-     // Arbitration Protocol: Check for unmute conditions
     if (mutedNodesInfo?.unmute_conditions) {
         const lastMessage = messagesRef.current[messagesRef.current.length - 1];
         let shouldUnmute = false;
         let reason = '';
-
         for (const condition of mutedNodesInfo.unmute_conditions) {
             if (condition.type === 'TIMEOUT' && condition.timeout_ticks && tickRef.current >= condition.timeout_ticks) {
-                shouldUnmute = true;
-                reason = `Timeout of ${condition.timeout_ticks} ticks reached.`;
-                break;
+                shouldUnmute = true; reason = `Timeout of ${condition.timeout_ticks} ticks reached.`; break;
             }
             if (lastMessage && condition.type === 'SCHEMA_BASED' && lastMessage.schema_id === condition.schema_id) {
-                shouldUnmute = true;
-                reason = `Required action (${condition.schema_id}) was completed.`;
-                break;
+                shouldUnmute = true; reason = `Required action (${condition.schema_id}) was completed.`; break;
             }
             if (lastMessage && condition.type === 'NOVELTY_BASED' && lastMessage.payload.confidence > (condition.novelty_score || 0.8)) {
-                 shouldUnmute = true;
-                 reason = `A new high-confidence breakthrough was generated.`;
-                 break;
+                 shouldUnmute = true; reason = `A new high-confidence breakthrough was generated.`; break;
             }
         }
-
         if (shouldUnmute) {
             addSystemLog('Conditionally Muted Nodes Reactivated', { nodes: mutedNodesInfo.nodes, reason }, 'SYSTEM_OK');
             setMutedNodesInfo(null);
         }
     }
 
-
     const currentMessage = messageQueueRef.current.shift();
     if (!currentMessage) return STANDARD_TICK_INTERVAL_MS;
     
+    // Strategic Circuit Breaker Logic
+    const strategicNodes = [NodeName.PHI, NodeName.META, NodeName.COSMO];
+    if (strategicNodes.includes(currentMessage.from)) {
+        infoLoopTrackerRef.current = { count: 0, startHealth: systemStatus.health };
+    } else if (currentMessage.from === NodeName.INFO) {
+        if (infoLoopTrackerRef.current.count === 0) {
+            infoLoopTrackerRef.current.startHealth = systemStatus.health;
+        }
+        infoLoopTrackerRef.current.count++;
+        if (infoLoopTrackerRef.current.count > 20 && systemStatus.health < infoLoopTrackerRef.current.startHealth + 0.05) {
+            addSystemLog('Strategic Circuit Breaker Triggered!', { reason: 'Tactical loop detected without significant health improvement.' }, 'SYSTEM_ERROR');
+            const muted = [NodeName.CLICK, NodeName.TECH, NodeName.SCI];
+            setMutedNodesInfo({ nodes: muted, muteUntilTick: tickRef.current + 10, reason: 'Strategic Reset: Tactical loop detected.' });
+            const directiveMessage: MessageEnvelope = {
+                msg_id: `strategic_reset_${Date.now()}`, from: NodeName.ORCHESTRATOR, to: strategicNodes,
+                ts: new Date().toISOString(), timeline: timelineRef.current, schema_id: 'N/A',
+                payload: { instruction: "STRATEGIC RESET TRIGGERED. The primary tactical loop has been locked for over 20 cycles without progress. Tactical nodes are temporarily muted. A fundamentally new strategic approach based on the original hypothesis is required immediately." },
+                trace: { parent: null, path: [NodeName.ORCHESTRATOR] }, validation: { schema_ok: true, errors: [] },
+                tick: tickRef.current, priority: 'HIGH', goldenThread: initialDirectiveRef.current,
+            };
+            messageQueueRef.current.unshift(directiveMessage);
+            infoLoopTrackerRef.current = { count: 0, startHealth: 1.0 }; // Reset
+        }
+    }
+
+
     cognitiveLoadRef.current.messagesThisTick++;
     setActiveTransition(null);
 
@@ -1213,7 +1252,6 @@ const App: React.FC = () => {
         
         setActiveTransition({ source: currentMessage.from, target: targetNodeId, id: currentMessage.msg_id });
         
-        // Directive Injection Logic (Phase 2)
         const directive = directivesRef.current[targetNodeId];
         if (directive) {
             delete directivesRef.current[targetNodeId]; // Use once
@@ -1226,40 +1264,52 @@ const App: React.FC = () => {
         
         try {
             const { payload, schema_id } = await AI_SERVICE.generateNodeOutput(
-                targetNodeId, 
-                currentMessage, 
-                simulationModeRef.current,
-                isQuotaExceededRef.current,
-                tickRef.current,
-                orchestratorModeRef.current,
-                initialDirectiveRef.current,
-                currentRunMaxTicks,
-                directive // Pass the directive to the AI service
+                targetNodeId, currentMessage, simulationModeRef.current, isQuotaExceededRef.current,
+                tickRef.current, orchestratorModeRef.current, initialDirectiveRef.current,
+                currentRunMaxTicks, directive
             );
-
+            if (simulationModeRef.current === 'online' && !isQuotaExceededRef.current) {
+                errorHistoryRef.current.push(0);
+                if (errorHistoryRef.current.length > 20) errorHistoryRef.current.shift();
+            }
             outputPayload = payload;
             outputSchemaId = schema_id;
             validationResult = validatePayload(schema_id, payload);
             emergenceDataLogRef.current.payloads.push({ tick: tickRef.current, from: targetNodeId, payload });
-
 
             if (orchestratorModeRef.current === 'jazz' && payload.requested_delay_ms) {
                 maxRequestedDelay = Math.max(maxRequestedDelay, payload.requested_delay_ms);
             }
         } catch (e) {
             const error = e as Error;
-            const errorString = JSON.stringify(e);
-            cognitiveLoadRef.current.errorsThisTick++;
-            
-            if ((errorString.includes('RESOURCE_EXHAUSTED') || (error.message && error.message.toLowerCase().includes('quota'))) && !isQuotaExceededRef.current) {
-                setIsQuotaExceeded(true);
-                addSystemLog('API Quota Exceeded', { details: 'Daily limit reached. Switching to offline mock simulation for this session.' }, 'SYSTEM_ERROR');
+            // This is the only place an API call can fail. We track it here.
+            if (simulationModeRef.current === 'online' && !isQuotaExceededRef.current) {
+                errorHistoryRef.current.push(1);
+                if (errorHistoryRef.current.length > 20) errorHistoryRef.current.shift();
+
+                const errorCount = errorHistoryRef.current.reduce((a, b) => a + b, 0);
+                const errorRate = errorCount / errorHistoryRef.current.length;
+
+                if (errorHistoryRef.current.length >= 10 && errorRate > 0.6) {
+                    setSimulationMode('offline');
+                    addSystemLog('Cognitive Overload Detected! Switching to offline mode.', {
+                        reason: "Sustained high API error rate.",
+                        thresholds: { error_rate: "> 60% over last 10-20 calls" },
+                        measured: {
+                            error_rate: `${(errorRate * 100).toFixed(0)}%`,
+                            api_latency: "N/A",
+                            message_density: `${cognitiveLoadRef.current.messagesThisTick}/tick`
+                        },
+                        next_probe_time: "Manual re-enable required.",
+                        backoff_policy: "Switched to full offline mode."
+                    }, 'SYSTEM_ERROR');
+                }
             }
-            
-            addSystemLog(`API Call Failed`, { node: targetNodeId, error: error.message }, 'SYSTEM_ERROR', targetNodeId);
+
+            // Handle individual error logging and mock payload generation
+            addSystemLog(`API Call Failed for ${targetNodeId}`, { error: error.message }, 'SYSTEM_ERROR', targetNodeId);
             validationResult = { isValid: false, errors: [error.message] };
-            
-            const { payload: mockPayload, schema_id: mockSchemaId } = AI_SERVICE.generateMockPayload(targetNodeId, currentMessage, tickRef.current, orchestratorModeRef.current, initialDirectiveRef.current, simulationModeRef.current);
+            const { payload: mockPayload, schema_id: mockSchemaId } = AI_SERVICE.generateMockPayload(targetNodeId, currentMessage, tickRef.current, orchestratorModeRef.current, initialDirectiveRef.current, 'offline');
             outputPayload = mockPayload;
             outputSchemaId = mockSchemaId;
             emergenceDataLogRef.current.payloads.push({ tick: tickRef.current, from: targetNodeId, payload: mockPayload });
@@ -1273,140 +1323,90 @@ const App: React.FC = () => {
         }
 
         const cleanErrors = (validationResult.errors || []).map(
-          ({ instancePath, schemaPath, keyword, params, message }) => ({
-            instancePath,
-            schemaPath,
-            keyword,
-            params,
-            message,
-          })
+          ({ instancePath, schemaPath, keyword, params, message }) => ({ instancePath, schemaPath, keyword, params, message, })
         );
 
         if (!validationResult.isValid) {
-             cognitiveLoadRef.current.errorsThisTick++;
              addSystemLog(`Validation Failed`, { node: targetNodeId, schema: outputSchemaId, errors: cleanErrors, payload: outputPayload }, 'SYSTEM_ERROR', targetNodeId, outputSchemaId);
         }
 
-        if (targetNodeId === NodeName.ETHOS && validationResult.isValid && outputPayload.ethical_viability === 'PASS') {
+        if (targetNodeId === NodeName.ETHOS && validationResult.isValid && outputPayload.verdict === 'PASS') {
              lastTestPlanTickRef.current = tickRef.current; // Reset timer on successful plan
         }
         
-        if (targetNodeId === NodeName.ETHOS && validationResult.isValid && outputPayload.ethical_viability === 'FAIL') {
+        if (targetNodeId === NodeName.ETHOS && validationResult.isValid && outputPayload.verdict === 'FAIL') {
             const attempt = currentMessage.remediation_context?.attempt || 0;
             if (attempt >= 3) {
                 setIsPlaying(false);
                 addSystemLog(`[ETHOS] Moral Override Protocol Triggered after 3 failed attempts.`, outputPayload, 'SYSTEM_ERROR', NodeName.ETHOS);
-                await generateReport({ isFinal: true, moralOverride: true, rationale: outputPayload.reasoning, reportGenerationMode: 'offline' });
+                generateReport({ isFinal: true, moralOverride: true, rationale: outputPayload.required_mitigations.join('; '), reportGenerationMode: 'offline' });
                 return 0; // Stop processing immediately.
             } else {
-                initiateRemediationProtocol(currentMessage, outputPayload.reasoning);
+                initiateRemediationProtocol(currentMessage, outputPayload.required_mitigations.join('; '));
                 continue; // Skip normal processing for this message
             }
         }
         
-        if (currentMessage.remediation_context) {
+        if (currentMessage.remediation_context && currentMessage.from === NodeName.ETHOS) {
             const { original_msg_id } = currentMessage.remediation_context;
-            
-            // FIX: Ensure the feedback array exists before pushing to it.
-            if (!remediationFeedbackRef.current[original_msg_id]) {
-                remediationFeedbackRef.current[original_msg_id] = [];
+            if (!remediationFeedbackRef.current[original_msg_id]) { 
+                // This case should not happen, but as a safeguard...
+                addSystemLog('Remediation protocol error: feedback ref not found.', { original_msg_id }, 'SYSTEM_ERROR');
+                continue; 
             }
             remediationFeedbackRef.current[original_msg_id].push({ from: targetNodeId, payload: outputPayload });
-            
             const feedback = remediationFeedbackRef.current[original_msg_id];
             const remediationAdvisors = [NodeName.META, NodeName.PHI];
-
-            if (feedback.length < remediationAdvisors.length) {
-                continue; // Wait for more feedback from advisors
+            if (feedback.length < remediationAdvisors.length) { 
+                continue; 
             }
-
-            // All feedback gathered, send back to CLICK
             addSystemLog(`Remediation feedback from [META, PHI] gathered. Tasking CLICK to generate revised TEST_PLAN.`, {}, 'SYSTEM_OK');
-            
-            const finalRemediationContext: RemediationContext = {
-                ...currentMessage.remediation_context,
-                council_feedback: feedback.map(f => f.payload),
-            };
-
+            const finalRemediationContext: RemediationContext = { ...currentMessage.remediation_context, council_feedback: feedback.map(f => f.payload), };
             const resubmitMessage: MessageEnvelope = {
-                ...currentMessage,
-                msg_id: `resubmit_click_${Date.now()}`,
-                to: [NodeName.CLICK],
-                from: NodeName.ORCHESTRATOR,
-                remediation_context: finalRemediationContext,
-                payload: {} // Payload is empty; context has all info
+                ...currentMessage, msg_id: `resubmit_click_${Date.now()}`, to: [NodeName.CLICK],
+                from: NodeName.ORCHESTRATOR, remediation_context: finalRemediationContext, payload: {}
             };
             messageQueueRef.current.unshift(resubmitMessage);
-            delete remediationFeedbackRef.current[original_msg_id]; // Clean up
-            continue; // Stop this branch, let CLICK take over
+            delete remediationFeedbackRef.current[original_msg_id];
+            continue;
         }
 
-        // Handle META Commands (Phase 1 Upgrade)
         if (targetNodeId === NodeName.META && outputSchemaId === 'FD.META.COMMAND.v1' && validationResult.isValid) {
             const command = outputPayload;
             if (command.action === 'CUT_LOOP') {
-                addSystemLog(
-                    `[META] Command Executed: CUT_LOOP`,
-                    { rationale: command.rationale, involved_nodes: command.involved_nodes },
-                    'COMMAND',
-                    NodeName.META,
-                    outputSchemaId
-                );
-                
-                // ACTION: Clear the message queue to break the loop
+                addSystemLog( `[META] Command Executed: CUT_LOOP`, { rationale: command.rationale, involved_nodes: command.involved_nodes }, 'COMMAND', NodeName.META, outputSchemaId );
                 messageQueueRef.current = [];
-                
-                // Inject a message to restart the process cleanly from a high-level node
+                // FIX: In Beacon mode, CUT_LOOP should restart the cycle from INSIGHT, not PHI.
+                const restartTarget = orchestratorModeRef.current === 'beacon' ? NodeName.INSIGHT : NodeName.PHI;
                 const restartEnvelope: MessageEnvelope = {
-                    msg_id: `restart_${Date.now()}`,
-                    from: NodeName.ORCHESTRATOR,
-                    to: [NodeName.PHI], // Restart from a philosophical/high-level node
-                    ts: new Date().toISOString(),
-                    timeline: currentMessage.timeline,
-                    schema_id: 'FD.PHI.HYPOTHESIS.v1',
+                    msg_id: `restart_${Date.now()}`, from: NodeName.ORCHESTRATOR, to: [restartTarget], ts: new Date().toISOString(),
+                    timeline: currentMessage.timeline, schema_id: 'FD.PHI.HYPOTHESIS.v1',
                     payload: { hypothesis: `RESTART after loop cut: ${command.rationale}. Original directive was: '${initialDirectiveRef.current}'` },
-                    trace: { parent: currentMessage.msg_id, path: [NodeName.ORCHESTRATOR] },
-                    validation: { schema_ok: true, errors: [] },
-                    tick: tickRef.current,
-                    priority: 'HIGH',
-                    goldenThread: currentMessage.goldenThread,
+                    trace: { parent: currentMessage.msg_id, path: [NodeName.ORCHESTRATOR] }, validation: { schema_ok: true, errors: [] },
+                    tick: tickRef.current, priority: 'HIGH', goldenThread: currentMessage.goldenThread,
                 };
                 messageQueueRef.current.push(restartEnvelope);
-                
-                // Since this is a terminal command for this tick, we can break out of the target loop
-                break; // Exit the for...of loop over currentMessage.to
+                break;
             }
         }
         
-        // Handle PHI Interventions (Phase 2 Upgrade)
         if (targetNodeId === NodeName.PHI && outputSchemaId === 'FD.PHI.INTERVENTION.v1' && validationResult.isValid) {
             const intervention = outputPayload.suggested_intervention;
             if (intervention && intervention.target_node && intervention.prompt_reframe) {
                 directivesRef.current[intervention.target_node] = intervention.prompt_reframe;
-                addSystemLog(
-                    `[PHI] Intervention Queued for ${intervention.target_node}`,
-                    { intervention },
-                    'COMMAND',
-                    NodeName.PHI,
-                    outputSchemaId
-                );
+                addSystemLog( `[PHI] Intervention Queued for ${intervention.target_node}`, { intervention }, 'COMMAND', NodeName.PHI, outputSchemaId );
             }
         }
 
-
-        if (controlModeRef.current === 'dynamic' &&
-            [NodeName.PROBABILITY, NodeName.META, NodeName.DMT].includes(targetNodeId) &&
-            validationResult.isValid && outputPayload.strategic_proposal) {
+        // FIX: Corrected typo from `NodeName.DMT` to `NodeName.DMAT`.
+        if (controlModeRef.current === 'dynamic' && [NodeName.PROBABILITY, NodeName.META, NodeName.DMAT].includes(targetNodeId) && validationResult.isValid && outputPayload.strategic_proposal) {
             const proposal = outputPayload.strategic_proposal as StrategicProposal;
-            if (proposal.confidence && proposal.confidence > 0.9) { // High confidence threshold
-                await handleSystemProposal(proposal, targetNodeId);
-                if (proposal.action === 'REQUEST_IMMEDIATE_TERMINATION') {
-                  return 0; // Stop processing immediately after abort.
-                }
+            if (proposal.confidence && proposal.confidence > 0.9) {
+                handleSystemProposal(proposal, targetNodeId);
+                if (proposal.action === 'REQUEST_IMMEDIATE_TERMINATION') { return 0; }
             }
         }
         
-        // Adaptive Mode: DMAT's Logical Guardrail
         if (orchestratorModeRef.current === 'adaptive' && targetNodeId === NodeName.DMAT && validationResult.isValid && outputPayload.semantic_loss_score > 0.7) {
             const muted = [NodeName.PHI, NodeName.COSMO, NodeName.CHAR];
             const reason = `High semantic loss (${outputPayload.semantic_loss_score.toFixed(2)}) detected by DMAT.`;
@@ -1414,56 +1414,35 @@ const App: React.FC = () => {
             setMutedNodesInfo({ nodes: muted, muteUntilTick: tickRef.current + 5, reason: reason });
         }
 
-
-        if (targetNodeId === NodeName.ENGINEER) {
-            if (validationResult.isValid) {
-                handleEngineerCommand(outputPayload);
-            }
-            continue;
+        if (targetNodeId === NodeName.ENGINEER) { if (validationResult.isValid) { handleEngineerCommand(outputPayload); } continue; }
+        // FIX: Only call the command handler for actual intervention payloads, not all payloads sent to PHI_LOGIC.
+        if (targetNodeId === NodeName.PHI_LOGIC && outputSchemaId === 'FD.PHI_LOGIC.INTERVENTION.v1') { 
+            if (validationResult.isValid) { 
+                handlePhiLogicCommand(outputPayload, currentMessage); 
+            } 
+            continue; 
         }
 
-        if (targetNodeId === NodeName.PHI_LOGIC && orchestratorModeRef.current !== 'prisma') {
-            if (validationResult.isValid) {
-                handlePhiLogicCommand(outputPayload, currentMessage);
-            }
-            continue;
-        }
 
-        // Arbitration Protocol: Execute Arbiter's Ruling
         if (targetNodeId === NodeName.ARBITER && outputSchemaId === 'FD.ARBITER.RULING.v1') {
             if (validationResult.isValid) {
-                // Beacon Mode: A ruling marks the end of a cycle.
                 cycleCountRef.current += 1;
                 const ruling = outputPayload as ArbitrationRuling;
                 addSystemLog(`ARBITER has issued a ruling: ${ruling.ruling_type}. Entering Cycle ${cycleCountRef.current + 1}.`, ruling, 'COMMAND', NodeName.ARBITER);
-
                 switch (ruling.ruling_type) {
                     case 'CREATIVE_GREENLIT':
                         if (ruling.details.nodes_to_mute && ruling.details.unmute_conditions) {
                             const timeoutCondition = ruling.details.unmute_conditions.find(c => c.type === 'TIMEOUT');
                             const muteUntil = timeoutCondition?.timeout_ticks ? tickRef.current + timeoutCondition.timeout_ticks : undefined;
-                            setMutedNodesInfo({
-                                nodes: ruling.details.nodes_to_mute,
-                                reason: `Temporarily muted by ARBITER ruling to ensure focus.`,
-                                unmute_conditions: ruling.details.unmute_conditions,
-                                muteUntilTick: muteUntil
-                            });
+                            setMutedNodesInfo({ nodes: ruling.details.nodes_to_mute, reason: `Temporarily muted by ARBITER ruling to ensure focus.`, unmute_conditions: ruling.details.unmute_conditions, muteUntilTick: muteUntil });
                         }
                         break;
                     case 'RISK_MITIGATION':
-                        if (ruling.details.routing_change) {
-                            handleEngineerCommand({
-                                action: 'RE_ROUTE',
-                                from: ruling.details.routing_change.from,
-                                to: ruling.details.routing_change.to,
-                                rationale: `Enforced by ARBITER ruling.`
-                            });
-                        }
+                        if (ruling.details.routing_change) { handleEngineerCommand({ action: 'RE_ROUTE', from: ruling.details.routing_change.from, to: ruling.details.routing_change.to, rationale: `Enforced by ARBITER ruling.` }); }
                         if (ruling.details.directive_to_insight) {
                              const directiveMessage: MessageEnvelope = {
                                 msg_id: `arbiter_directive_${Date.now()}`, from: NodeName.ARBITER, to: [NodeName.INSIGHT],
-                                ts: new Date().toISOString(), timeline: timelineRef.current, schema_id: 'N/A',
-                                payload: { instruction: ruling.details.directive_to_insight },
+                                ts: new Date().toISOString(), timeline: timelineRef.current, schema_id: 'N/A', payload: { instruction: ruling.details.directive_to_insight },
                                 trace: { parent: currentMessage.msg_id, path: [...currentMessage.trace.path, NodeName.ARBITER] },
                                 validation: { schema_ok: true, errors: [] }, tick: tickRef.current, priority: 'HIGH', goldenThread: currentMessage.goldenThread,
                             };
@@ -1472,91 +1451,64 @@ const App: React.FC = () => {
                         break;
                     case 'SYNTHESIS_TASK_FORCE':
                         if (ruling.details.task_force_nodes && ruling.details.task_force_objective) {
-                            const rawNodes = ruling.details.task_force_nodes || [];
-                            const resolvedNodes: NodeName[] = [];
-                            let arbitrationContextMessage: MessageEnvelope | undefined;
-
+                            const rawNodes = ruling.details.task_force_nodes || []; const resolvedNodes: NodeName[] = []; let arbitrationContextMessage: MessageEnvelope | undefined;
                             for (const node of rawNodes) {
-                                if (Object.values(NodeName).includes(node as NodeName)) {
-                                    resolvedNodes.push(node as NodeName);
-                                } else {
-                                    // Phase 2: Dynamic Inference Logic
-                                    if (!arbitrationContextMessage) { // Find context message once
-                                        const parentId = currentMessage.trace.parent;
-                                        arbitrationContextMessage = parentId ? messagesRef.current.find(m => m.msg_id === parentId) : undefined;
-                                    }
-
+                                if (Object.values(NodeName).includes(node as NodeName)) { resolvedNodes.push(node as NodeName); } else {
+                                    if (!arbitrationContextMessage) { const parentId = currentMessage.trace.parent; arbitrationContextMessage = parentId ? messagesRef.current.find(m => m.msg_id === parentId) : undefined; }
                                     const context = arbitrationContextMessage?.arbitration_context;
                                     if (context?.plaintiff_payloads && context.plaintiff_payloads.length > 0) {
-                                        const candidateNodes = context.plaintiff_payloads.map(p => p.from);
-                                        const inferredNodes = [...new Set(candidateNodes)];
-                                        resolvedNodes.push(...inferredNodes);
-                                        addSystemLog(
-                                            `Orchestrator auto-corrected ARBITER ruling (Dynamic).`,
-                                            { details: `Inferred non-existent node '${node}' represents the plaintiff faction: [${inferredNodes.join(', ')}]` },
-                                            'SYSTEM_OK'
-                                        );
+                                        const candidateNodes = context.plaintiff_payloads.map(p => p.from); const inferredNodes = [...new Set(candidateNodes)]; resolvedNodes.push(...inferredNodes);
+                                        addSystemLog( `Orchestrator auto-corrected ARBITER ruling (Dynamic).`, { details: `Inferred non-existent node '${node}' represents the plaintiff faction: [${inferredNodes.join(', ')}]` }, 'SYSTEM_OK' );
                                     } else {
-                                        // Phase 1 Fallback: Use static alias map if context is missing
                                         if (NODE_ALIASES[node]) {
-                                            const mappedNodes = NODE_ALIASES[node];
-                                            resolvedNodes.push(...mappedNodes);
-                                            addSystemLog(
-                                                `Orchestrator auto-corrected ARBITER ruling (Alias Map).`,
-                                                { details: `Replaced non-existent node alias '${node}' with mapped nodes: [${mappedNodes.join(', ')}]` },
-                                                'SYSTEM_OK'
-                                            );
-                                        } else {
-                                            addSystemLog(
-                                                `ARBITER proposed an unknown node which was ignored.`,
-                                                { details: `Node name '${node}' is not a valid node, recognized alias, or inferable from context.` },
-                                                'SYSTEM_ERROR'
-                                            );
-                                        }
+                                            const mappedNodes = NODE_ALIASES[node]; resolvedNodes.push(...mappedNodes);
+                                            addSystemLog( `Orchestrator auto-corrected ARBITER ruling (Alias Map).`, { details: `Replaced non-existent node alias '${node}' with mapped nodes: [${mappedNodes.join(', ')}]` }, 'SYSTEM_OK' );
+                                        } else { addSystemLog( `ARBITER proposed an unknown node which was ignored.`, { details: `Node name '${node}' is not a valid node, recognized alias, or inferable from context.` }, 'SYSTEM_ERROR' ); }
                                     }
                                 }
                             }
-                            
                             const finalTaskForceNodes = [...new Set(resolvedNodes)];
-                    
                             if (finalTaskForceNodes.length > 0) {
-                                const new_task_force = new Set<NodeName>(finalTaskForceNodes);
-                                setTaskForce(new_task_force);
+                                const new_task_force = new Set<NodeName>(finalTaskForceNodes); setTaskForce(new_task_force);
                                 const taskForceMessage: MessageEnvelope = {
-                                    msg_id: `arbiter_taskforce_${Date.now()}`,
-                                    from: NodeName.ARBITER,
-                                    to: finalTaskForceNodes,
-                                    ts: new Date().toISOString(),
-                                    timeline: timelineRef.current,
-                                    schema_id: 'N/A',
+                                    msg_id: `arbiter_taskforce_${Date.now()}`, from: NodeName.ARBITER, to: finalTaskForceNodes,
+                                    ts: new Date().toISOString(), timeline: timelineRef.current, schema_id: 'N/A',
                                     payload: { instruction: `A special task force has been formed. Objective: ${ruling.details.task_force_objective}` },
                                     trace: { parent: currentMessage.msg_id, path: [...currentMessage.trace.path, NodeName.ARBITER] },
-                                    validation: { schema_ok: true, errors: [] },
-                                    tick: tickRef.current,
-                                    priority: 'HIGH',
-                                    goldenThread: currentMessage.goldenThread,
+                                    validation: { schema_ok: true, errors: [] }, tick: tickRef.current, priority: 'HIGH', goldenThread: currentMessage.goldenThread,
                                 };
                                 messageQueueRef.current.unshift(taskForceMessage);
-                            } else {
-                                addSystemLog(
-                                    `ARBITER task force formation failed.`,
-                                    { details: `No valid nodes were resolved from the ARBITER's proposed list: [${rawNodes.join(', ')}]` },
-                                    'SYSTEM_ERROR'
-                                );
-                            }
+                            } else { addSystemLog( `ARBITER task force formation failed.`, { details: `No valid nodes were resolved from the ARBITER's proposed list: [${rawNodes.join(', ')}]` }, 'SYSTEM_ERROR' ); }
                         }
                         break;
                 }
-                setIsArbitrationActive(false); // Unfreeze the system
-            } else {
-                 addSystemLog('ARBITER ruling was invalid. System remains paused.', { errors: cleanErrors }, 'SYSTEM_ERROR');
-            }
+                setIsArbitrationActive(false);
+            } else { addSystemLog('ARBITER ruling was invalid. System remains paused.', { errors: cleanErrors }, 'SYSTEM_ERROR'); }
              subTickCounter++;
         }
 
-
         let nextTargetsRaw = dynamicRoutingMatrix[targetNodeId] || [];
-        // Apply muting from DMAT's guardrail or Arbiter's ruling
+        
+        // Dynamic Routing Logic for Beacon Mode
+        if (orchestratorModeRef.current === 'beacon') {
+            if (targetNodeId === NodeName.QTM) {
+                // This is QTM itself, broadcasting.
+                const pool = [...QTM_FULL_SENSOR_POOL];
+                const selectedTargets: NodeName[] = [];
+                for (let i = 0; i < 4; i++) {
+                    if (pool.length === 0) break;
+                    const randomIndex = Math.floor(Math.random() * pool.length);
+                    selectedTargets.push(pool.splice(randomIndex, 1)[0]);
+                }
+                nextTargetsRaw = selectedTargets;
+                addSystemLog(`[QTM] Quantum Broadcast Initiated`, { targets: selectedTargets }, 'COMMAND', NodeName.QTM);
+            } else if (currentMessage.from === NodeName.QTM) {
+                // This is a sensor node that just received a message from QTM.
+                // It MUST report to INFO, overriding any static route defined in the matrix.
+                nextTargetsRaw = [NodeName.INFO];
+            }
+        }
+
         if (mutedNodesInfo && (tickRef.current < (mutedNodesInfo.muteUntilTick || Infinity) || mutedNodesInfo.unmute_conditions)) {
             nextTargetsRaw = nextTargetsRaw.filter(target => !mutedNodesInfo.nodes.includes(target));
         }
@@ -1564,170 +1516,89 @@ const App: React.FC = () => {
 
         const newEnvelope: MessageEnvelope = {
             msg_id: `${targetNodeId.toLowerCase()}${tickRef.current}-${Math.random().toString(36).substring(7)}`,
-            from: targetNodeId,
-            to: nextTargets,
-            ts: new Date().toISOString(),
-            priority: outputPayload?.priority || 'LOW',
-            timeline: currentMessage.timeline,
-            schema_id: outputSchemaId,
-            payload: outputPayload,
+            from: targetNodeId, to: nextTargets, ts: new Date().toISOString(),
+            priority: outputPayload?.priority || 'LOW', timeline: currentMessage.timeline, schema_id: outputSchemaId, payload: outputPayload,
             trace: { parent: currentMessage.msg_id, path: [...currentMessage.trace.path, targetNodeId] },
             validation: { schema_ok: validationResult.isValid, errors: cleanErrors },
-            tick: tickRef.current,
-            subTick: currentMessage.to.length > 1 ? subTickCounter : undefined,
+            tick: tickRef.current, subTick: currentMessage.to.length > 1 ? subTickCounter : undefined,
             goldenThread: currentMessage.goldenThread,
         };
         
-        // Activate Feedback Loop if present (Phase 3 Upgrade)
         if (newEnvelope.from === NodeName.CLICK && newEnvelope.payload.feedback_loop) {
-            activeFeedbackLoopsRef.current.push({
-                ...newEnvelope.payload.feedback_loop,
-                source_msg_id: newEnvelope.msg_id,
-                start_tick: tickRef.current,
-            });
+            activeFeedbackLoopsRef.current.push({ ...newEnvelope.payload.feedback_loop, source_msg_id: newEnvelope.msg_id, start_tick: tickRef.current, });
             addSystemLog(`[CLICK] Feedback Loop Activated`, newEnvelope.payload.feedback_loop, 'COMMAND', NodeName.CLICK);
         }
 
-        // Cognitive Load Governor: Throttle creative node priority
-        if (throttledNodesRef.current.has(targetNodeId)) {
-            newEnvelope.priority = 'LOW';
-        }
+        if (throttledNodesRef.current.has(targetNodeId)) { newEnvelope.priority = 'LOW'; }
 
-        // RISK Node Enhancement: Auto-promote priority in critical modes
-        if (targetNodeId === NodeName.PROBABILITY &&
-            (orchestratorModeRef.current === 'holistic' || orchestratorModeRef.current === 'fhiemdien') &&
-            tickRef.current < (currentRunMaxTicks * 0.2)) {
-            
-            if (newEnvelope.priority !== 'HIGH') {
-                addSystemLog(`RISK message priority auto-promoted to HIGH in early-phase ${orchestratorModeRef.current} mode.`, {}, 'SYSTEM_OK', NodeName.ORCHESTRATOR);
-            }
+        if (targetNodeId === NodeName.PROBABILITY && (orchestratorModeRef.current === 'holistic' || orchestratorModeRef.current === 'fhiemdien') && tickRef.current < (currentRunMaxTicks * 0.2)) {
+            if (newEnvelope.priority !== 'HIGH') { addSystemLog(`RISK message priority auto-promoted to HIGH in early-phase ${orchestratorModeRef.current} mode.`, {}, 'SYSTEM_OK', NodeName.ORCHESTRATOR); }
             newEnvelope.priority = 'HIGH';
         }
 
-
         if (newEnvelope.from === NodeName.CLICK && currentMessage.remediation_context) {
-            newEnvelope.remediation_context = {
-                ...currentMessage.remediation_context,
-                council_feedback: undefined,
-            }
-            // The revised plan from CLICK is sent back to ETHOS
+            newEnvelope.remediation_context = { ...currentMessage.remediation_context, council_feedback: undefined, }
             newEnvelope.to = [NodeName.ETHOS];
         }
 
-        if (newEnvelope.from === NodeName.INSIGHT &&
-            newEnvelope.priority === 'HIGH' &&
-            newEnvelope.payload.confidence > 0.9) {
-            setIsBreakthrough(true);
-            setTimeout(() => setIsBreakthrough(false), 6000);
+        if (newEnvelope.from === NodeName.INSIGHT && newEnvelope.priority === 'HIGH' && newEnvelope.payload.confidence > 0.9) {
+            setIsBreakthrough(true); setTimeout(() => setIsBreakthrough(false), 6000);
         }
 
-        const isArbiterRulingFeedback = newEnvelope.from === NodeName.ARBITER &&
-            newEnvelope.schema_id === 'FD.ARBITER.RULING.v1' &&
-            orchestratorModeRef.current === 'beacon';
-
-        if (isArbiterRulingFeedback) {
-            messageQueueRef.current.unshift(newEnvelope);
-        } else if(nextTargets.length > 0) {
-            messageQueueRef.current.push(newEnvelope);
-        }
+        const isArbiterRulingFeedback = newEnvelope.from === NodeName.ARBITER && newEnvelope.schema_id === 'FD.ARBITER.RULING.v1' && orchestratorModeRef.current === 'beacon';
+        if (isArbiterRulingFeedback) { messageQueueRef.current.unshift(newEnvelope); } else if(nextTargets.length > 0) { messageQueueRef.current.push(newEnvelope); }
         setMessages(prev => [...prev, newEnvelope]);
         subTickCounter++;
     }
 
-    // Arbitration Protocol Trigger Logic (HOLISTIC mode only)
     if (orchestratorModeRef.current === 'holistic') {
         const lastMessage = messagesRef.current[messagesRef.current.length - 1];
         if (lastMessage) {
             let triggerKey: string | null = null;
-            if (lastMessage.from === NodeName.META && lastMessage.payload?.observations?.[0]?.type === 'LOOP' && lastMessage.payload.observations[0].confidence > 0.8) {
-                triggerKey = 'META_LOOP';
+            if (lastMessage.from === NodeName.META && lastMessage.payload?.observations?.[0]?.type === 'LOOP' && lastMessage.payload.observations[0].confidence > 0.8) { triggerKey = 'META_LOOP';
             } else if (lastMessage.from === NodeName.PROBABILITY && lastMessage.payload?.alternative_hypotheses) {
                 const totalAltProb = lastMessage.payload.alternative_hypotheses.reduce((sum: number, h: any) => sum + h.probability, 0);
-                if (totalAltProb > 0.7) {
-                    triggerKey = 'RISK_HIGH_ALT_PROB';
-                }
+                if (totalAltProb > 0.7) { triggerKey = 'RISK_HIGH_ALT_PROB'; }
             }
-            
             if (triggerKey) {
                 const trigger = arbitrationTriggersRef.current[triggerKey] || { count: 0, lastTick: -1 };
                 if (tickRef.current > trigger.lastTick) {
-                    trigger.count++;
-                    trigger.lastTick = tickRef.current;
-                    arbitrationTriggersRef.current[triggerKey] = trigger;
-                    
+                    trigger.count++; trigger.lastTick = tickRef.current; arbitrationTriggersRef.current[triggerKey] = trigger;
                     if (trigger.count >= 3) {
                         addSystemLog("CRITICAL STALEMATE DETECTED. Arbitration Protocol engaged.", { trigger: triggerKey }, 'SYSTEM_ERROR');
-                        setIsArbitrationActive(true);
-                        setIsPlaying(false);
-                        
+                        setIsArbitrationActive(true); setIsPlaying(false);
                         const creativeFaction = [NodeName.INSIGHT, NodeName.PHI, NodeName.GEO3D, NodeName.ART, NodeName.COSMO];
                         const supervisoryFaction = [NodeName.PROBABILITY, NodeName.META];
-
-                        const plaintiffPayloads: ArbitrationPayload[] = messagesRef.current
-                            .filter(m => creativeFaction.includes(m.from))
-                            .slice(-3)
-                            .map(m => ({ from: m.from, payload: m.payload }));
-
-                        const defendantPayloads: ArbitrationPayload[] = messagesRef.current
-                            .filter(m => supervisoryFaction.includes(m.from))
-                            .slice(-2)
-                            .map(m => ({ from: m.from, payload: m.payload }));
-
+                        const plaintiffPayloads: ArbitrationPayload[] = messagesRef.current.filter(m => creativeFaction.includes(m.from)).slice(-3).map(m => ({ from: m.from, payload: m.payload }));
+                        const defendantPayloads: ArbitrationPayload[] = messagesRef.current.filter(m => supervisoryFaction.includes(m.from)).slice(-2).map(m => ({ from: m.from, payload: m.payload }));
                         const arbitrationMessage: MessageEnvelope = {
                             msg_id: `arbiter_summon_${Date.now()}`, from: NodeName.ORCHESTRATOR, to: [NodeName.ARBITER],
-                            ts: new Date().toISOString(), timeline: timelineRef.current, schema_id: 'N/A',
-                            payload: { instruction: "A critical stalemate has been detected. Analyze the conflicting evidence and issue a binding ruling." },
-                            // FIX: Corrected property assignment to map camelCase variables to snake_case properties.
+                            ts: new Date().toISOString(), timeline: timelineRef.current, schema_id: 'N/A', payload: { instruction: "A critical stalemate has been detected. Analyze the conflicting evidence and issue a binding ruling." },
                             arbitration_context: { plaintiff_payloads: plaintiffPayloads, defendant_payloads: defendantPayloads },
-                            trace: { parent: null, path: [NodeName.ORCHESTRATOR] },
-                            validation: { schema_ok: true, errors: [] }, tick: tickRef.current, priority: 'HIGH',
+                            trace: { parent: null, path: [NodeName.ORCHESTRATOR] }, validation: { schema_ok: true, errors: [] }, tick: tickRef.current, priority: 'HIGH',
                             goldenThread: initialDirectiveRef.current,
                         };
-                        messageQueueRef.current = [arbitrationMessage]; // Clear queue and add only this message
-                        arbitrationTriggersRef.current = {}; // Reset triggers
-                        return STANDARD_TICK_INTERVAL_MS; // Return to let the Arbiter process next
+                        messageQueueRef.current = [arbitrationMessage]; arbitrationTriggersRef.current = {};
+                        return STANDARD_TICK_INTERVAL_MS;
                     }
                 }
             }
         }
     }
 
-
-    // Cognitive Load Governor: Decision Logic
     if (controlModeRef.current === 'dynamic') {
-        const { messagesThisTick, errorsThisTick } = cognitiveLoadRef.current;
-        const errorRate = errorsThisTick / (messagesThisTick || 1);
+        const { messagesThisTick } = cognitiveLoadRef.current;
         const creativeNodes: NodeName[] = [NodeName.CHAR, NodeName.ART, NodeName.COSMO];
-
-        // Critical Threshold
-        if (messagesThisTick > 35 || errorRate > 0.25) {
-            if (simulationModeRef.current === 'online') {
-                setSimulationMode('offline');
-                addSystemLog(
-                    'Cognitive Overload Detected!',
-                    {
-                        details: `Message Density: ${messagesThisTick}/tick, API Error Rate: ${(errorRate * 100).toFixed(0)}%. Switching to offline mode to stabilize and consolidate.`,
-                    },
-                    'SYSTEM_ERROR'
-                );
-            }
-        }
-        // Warning Threshold
-        else if (messagesThisTick > 20 || errorRate > 0.10) {
+        if (messagesThisTick > 20) {
             if (throttledNodesRef.current.size === 0) {
                 creativeNodes.forEach(node => throttledNodesRef.current.add(node));
                 addSystemLog(
                     'Cognitive Load High: Throttling Creative Nodes',
-                    {
-                        details: `Message Density: ${messagesThisTick}/tick, API Error Rate: ${(errorRate * 100).toFixed(0)}%. Reducing priority for creative nodes to stabilize discussion.`,
-                        throttled_nodes: creativeNodes,
-                    },
+                    { details: `Message Density: ${messagesThisTick}/tick. Reducing priority for creative nodes to stabilize discussion.`, throttled_nodes: creativeNodes },
                     'SYSTEM_OK'
                 );
             }
-        }
-        // Revert to Normal
-        else {
+        } else {
             if (throttledNodesRef.current.size > 0) {
                 throttledNodesRef.current.clear();
                 addSystemLog(
@@ -1738,9 +1609,8 @@ const App: React.FC = () => {
             }
         }
     }
-
     return orchestratorModeRef.current === 'jazz' && maxRequestedDelay > 0 ? maxRequestedDelay : STANDARD_TICK_INTERVAL_MS;
-  }, [isSimulationRunning, generateReport, dynamicRoutingMatrix, taskForce, handleEngineerCommand, handlePhiLogicCommand, handleSystemProposal, addSystemLog, currentRunMaxTicks, initiateRemediationProtocol, mutedNodesInfo, isArbitrationActive, checkFeedbackLoops]);
+  }, [isSimulationRunning, generateReport, dynamicRoutingMatrix, taskForce, handleEngineerCommand, handlePhiLogicCommand, handleSystemProposal, addSystemLog, currentRunMaxTicks, initiateRemediationProtocol, mutedNodesInfo, isArbitrationActive, checkFeedbackLoops, systemStatus.health]);
   
   useEffect(() => {
     let intervalId: ReturnType<typeof setInterval> | undefined;
@@ -1753,40 +1623,50 @@ const App: React.FC = () => {
   }, [isPlaying]);
 
   useEffect(() => {
+    // This effect is the main simulation loop.
+    // It's designed to be robust against React StrictMode's double-invocation.
+    if (!isPlaying) {
+      return;
+    }
+
+    let isCancelled = false;
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
     let lastExecutionTime = Date.now();
 
     const loop = async () => {
-      if (!isPlayingRef.current) {
+      // If the effect has been cleaned up (e.g., component unmount or isPlaying changed), stop.
+      if (isCancelled || !isPlayingRef.current) {
+        return;
+      }
+      
+      const startTime = Date.now();
+      const idealNextDelay = await processQueue();
+      
+      // Check again after the async operation, as the state could have changed.
+      if (isCancelled || !isPlayingRef.current) {
         return;
       }
 
-      const startTime = Date.now();
-      
-      const idealNextDelay = await processQueue();
-      
       const processingTime = Date.now() - startTime;
-
       let delayForNextLoop = Math.max(0, idealNextDelay - processingTime);
-
       const timeSinceLastExecution = Date.now() - lastExecutionTime;
       
-      if (timeSinceLastExecution > idealNextDelay * 2) {
-        delayForNextLoop = 0; // Run next tick immediately
+      // If the browser was sleeping and we're way behind, run the next tick immediately.
+      if (timeSinceLastExecution > idealNextDelay * 2) { 
+        delayForNextLoop = 0; 
       }
       
-      if (isPlayingRef.current) {
-        lastExecutionTime = Date.now() + delayForNextLoop; 
-        timeoutId = setTimeout(loop, delayForNextLoop);
-      }
+      lastExecutionTime = Date.now() + delayForNextLoop;
+      timeoutId = setTimeout(loop, delayForNextLoop);
     };
 
-    if (isPlaying) {
-      lastExecutionTime = Date.now();
-      loop();
-    }
-    
+    lastExecutionTime = Date.now();
+    loop();
+
+    // The cleanup function is critical. It sets a flag to stop any in-flight async
+    // operations from continuing, and clears any scheduled timeouts.
     return () => {
+      isCancelled = true;
       if (timeoutId) {
         clearTimeout(timeoutId);
       }
@@ -1803,10 +1683,21 @@ const App: React.FC = () => {
     }
   }, [isSimulationRunning, isPlaying, lastReport]);
 
-  const handleSelectReportMode = useCallback((mode: 'online' | 'offline', isFinal: boolean) => {
+  const handleSelectReportMode = useCallback((mode: 'online' | 'offline', isFinalFromModal: boolean) => {
     setIsReportModeModalOpen(false);
-    generateReport({ reportGenerationMode: mode, isFinal });
-  }, [generateReport]);
+    if (systemTerminationReportOptions) {
+      // If a system termination triggered this, it's always a final report.
+      generateReport({
+        ...systemTerminationReportOptions,
+        reportGenerationMode: mode,
+        isFinal: true, // Override modal checkbox, it must be final.
+      });
+      setSystemTerminationReportOptions(null); // Reset the state
+    } else {
+      // Otherwise, it's a user-triggered report, respect the modal's checkbox.
+      generateReport({ reportGenerationMode: mode, isFinal: isFinalFromModal });
+    }
+  }, [generateReport, systemTerminationReportOptions]);
   
   const saveSimulationState = useCallback(() => {
     if (!isSimulationRunning) {
@@ -1831,6 +1722,7 @@ const App: React.FC = () => {
         currentRunMaxTicks: currentRunMaxTicks,
         executedCommands: Array.from(executedCommandsRef.current),
         emergenceDataLog: emergenceDataLogRef.current,
+        errorHistory: errorHistoryRef.current,
     };
     try {
         localStorage.setItem(SIMULATION_STATE_KEY, JSON.stringify(stateToSave));

@@ -1,4 +1,4 @@
-# Fhi Protocol V9 - Synthesis
+# Fhi Protocol V9.6.3 - Refinement
 ### An Experimental Framework for Emergent Intelligence
 
 Fhi is an experimental, browser-based framework for simulating emergent intelligence. It models a cognitive ecosystem where specialized AI agents collaborate, debate, and synthesize solutions to grand challenges—from the fundamental nature of consciousness to the unification of physics. This is not just a chatbot; it is a laboratory for observing how complex ideas evolve through multi-perspective analysis.
@@ -13,11 +13,11 @@ At its core, Fhi explores the hypothesis that true breakthroughs arise not from 
 
 ---
 
-## Key Features (V9.3.3 "Synthesis")
+## Key Features (V9.6.3 "Refinement")
 
-*   **Multi-Agent Cognitive Ecosystem:** Over 20 specialized AI nodes, including `PHI` (Philosophy), `SCI` (Science), `TECH` (Technology), `INSIGHT` (Synthesis), and `ARBITER` (Decision-Making), each with a unique persona and function.
+*   **Multi-Agent Cognitive Ecosystem:** Over 20 specialized AI nodes, including `PHI` (Philosophy), `SCI` (Science), `TECH` (Technology), `INSIGHT` (Synthesis), and the `QTM` (Quantum Tunneling Model) for non-linear problem solving.
+*   **Cognitive Pruning Mechanism:** An intelligent context-summarization feature that automatically reduces the token count on long-running simulations, significantly lowering API costs and improving performance without sacrificing short-term memory.
 *   **Dynamic Orchestrator Modes:** Switch between multiple cognitive modes (`Jazz`, `Holistic`, `Adaptive`, `Beacon`, etc.) that fundamentally alter the communication pathways and problem-solving strategies of the AI agents.
-*   **Emergent "Synthesis Task Forces":** The Orchestrator can now dynamically infer abstract commands, assembling ad-hoc teams of AI nodes to tackle specific, high-priority objectives.
 *   **Live Graph Visualization:** Watch the flow of information and the activation of AI agents in real-time through an interactive node matrix.
 *   **Online & Offline Simulation:** Run simulations using live calls to the Gemini API for deep, unpredictable analysis, or use the high-fidelity offline mode to experiment and test logic without incurring costs.
 *   **In-Depth Reporting & Memory:** Generate detailed post-simulation reports, including AI-driven meta-analysis, and leverage a memory system that allows the framework to learn from previous runs.

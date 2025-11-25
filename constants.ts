@@ -1,9 +1,11 @@
 
+
+
 import type { Node } from './types';
 import { NodeName } from './types';
 
-export const APP_VERSION = "9.3.3";
-export const APP_CODENAME = "Synthesis";
+export const APP_VERSION = "9.6.3";
+export const APP_CODENAME = "Refinement";
 
 export const NODES: Node[] = [
   { id: NodeName.PHI, label: 'PHI', description: 'Philosophy & Hypothesis' },
@@ -26,9 +28,12 @@ export const NODES: Node[] = [
   { id: NodeName.PROBABILITY, label: 'RISK', description: 'Probabilistic & Risk Analysis' },
   { id: NodeName.ENGINEER, label: 'ENGINEER', description: 'System Architecture Commands' },
   { id: NodeName.ETHOS, label: 'ETHOS', description: 'Ethical & Moral Guardrail' },
-  { id: NodeName.DMT, label: 'DMT', description: 'Internal State Analysis' },
+  { id: NodeName.QTM, label: 'QTM', description: 'Quantum Tunneling Model' },
   { id: NodeName.CLICK, label: 'CLICK', description: 'Operational Test Plan Design' },
 ];
+
+// FEATURE: Create a QTM_FULL_SENSOR_POOL containing all 22 processing nodes.
+export const QTM_FULL_SENSOR_POOL: NodeName[] = NODES.map(node => node.id);
 
 // V9.4: Add alias map to handle ARBITER hallucinations for abstract concepts.
 // This allows the Orchestrator to translate abstract commands into actionable node groups.
@@ -53,7 +58,7 @@ export const ROUTING_MATRIX: Record<NodeName, NodeName[]> = {
   // FIX: Corrected typo from `NodeNodeName` to `NodeName`.
   [NodeName.COSMO]: [NodeName.MATH, NodeName.GEO3D],
   [NodeName.MATH]: [NodeName.SCI, NodeName.INSIGHT], // MATH provides the blueprint for SCI to build the experiment.
-  [NodeName.SCI]: [NodeName.TECH, NodeName.DMAT, NodeName.PROBABILITY],
+  [NodeName.SCI]: [NodeName.TECH, NodeName.DMAT, NodeName.PROBABILITY, NodeName.QTM],
   [NodeName.TECH]: [NodeName.DATA, NodeName.INFO],
   [NodeName.DATA]: [NodeName.INFO],
 
@@ -65,7 +70,7 @@ export const ROUTING_MATRIX: Record<NodeName, NodeName[]> = {
   
   // FIX: Rerouted INSIGHT directly to CLICK to break the "endless analysis loop".
   // This forces breakthroughs to become actionable test plans immediately.
-  [NodeName.INSIGHT]: [NodeName.CLICK],
+  [NodeName.INSIGHT]: [NodeName.CLICK, NodeName.QTM],
 
   // --- Other connections ---
   [NodeName.GEO3D]: [NodeName.MATH, NodeName.ART],
@@ -76,7 +81,7 @@ export const ROUTING_MATRIX: Record<NodeName, NodeName[]> = {
   [NodeName.ARBITER]: [], 
   [NodeName.META]: [],
   [NodeName.MONITOR]: [],
-  [NodeName.DMT]: [],
+  [NodeName.QTM]: [],
   [NodeName.ORCHESTRATOR]: [],
 };
 
@@ -92,55 +97,57 @@ export const HOLISTIC_ROUTING_MATRIX: Record<NodeName, NodeName[]> = {
 };
 
 
-// V6.9.3: Complete overhaul to implement the three-phase "Quantum Information Communication Protocol".
+// V9.6 (Quantum Leap): Complete overhaul to implement the "Quantum Beacon" protocol.
+// QTM is now the central synchronization point.
 export const BEACON_ROUTING_MATRIX: Record<NodeName, NodeName[]> = {
   // --- Phase 1: Composition (The "Soạn nhạc" Stage) ---
   // Standard validation chain to create the initial, pure "Information Pattern".
   [NodeName.HUMAN]: [NodeName.MEMORY],
   [NodeName.MEMORY]: [NodeName.CHAR],
   [NodeName.CHAR]: [NodeName.CLICK],
-  [NodeName.CLICK]: [NodeName.ETHOS],
-  [NodeName.ETHOS]: [NodeName.INSIGHT], // The validated plan becomes the seed for the pattern.
+  // ETHOS is now an advisor, not a gatekeeper. CLICK sends the plan for execution (to INSIGHT)
+  // and for ethical review (to ETHOS) simultaneously.
+  [NodeName.CLICK]: [NodeName.INSIGHT, NodeName.ETHOS],
   
-  // FIX: The fan-out from INSIGHT was causing a fan-in flood to INFO, triggering a loop.
-  // This is now refactored into two parallel processing chains to ensure INFO is not overwhelmed.
-  [NodeName.INSIGHT]: [
-    NodeName.PHI,   // Start of the "Composition" processing chain
-    NodeName.DMAT   // Start of the "Observation" processing chain
-  ], 
+  // --- Phase 2: Quantum Broadcast (Phát sóng Lượng tử) ---
+  // INSIGHT sends the core pattern to QTM, the new synchronization hub.
+  [NodeName.INSIGHT]: [NodeName.QTM], 
   
-  // The "Composition Chain": Nodes process sequentially, terminating at INFO.
-  [NodeName.PHI]: [NodeName.MATH],
-  [NodeName.MATH]: [NodeName.COSMO],
-  [NodeName.COSMO]: [NodeName.INFO],
+  // FEATURE: QTM's routing is now dynamic. An empty array signals the App to randomly select targets.
+  [NodeName.QTM]: [],
 
-  // The "Observation Chain": Nodes process sequentially, also terminating at INFO.
-  [NodeName.DMAT]: [NodeName.SCI],
-  [NodeName.SCI]: [NodeName.PROBABILITY],
-  [NodeName.PROBABILITY]: [NodeName.GEO3D],
-  [NodeName.GEO3D]: [NodeName.TECH],
+  // --- Phase 3: Decoherence & Observation (Sụp đổ & Quan sát) ---
+  // The sensor nodes observe the effects of the broadcast and report their findings to INFO.
+  [NodeName.COSMO]: [NodeName.INFO],
+  [NodeName.GEO3D]: [NodeName.INFO],
+  [NodeName.SCI]: [NodeName.INFO],
+  [NodeName.MATH]: [NodeName.INFO],
+  [NodeName.ART]: [NodeName.INFO],
+  [NodeName.DMAT]: [NodeName.INFO],
+  [NodeName.PROBABILITY]: [NodeName.INFO],
   [NodeName.TECH]: [NodeName.INFO],
+  [NodeName.PHI]: [NodeName.INFO],
+  [NodeName.DATA]: [NodeName.INFO],
+  [NodeName.MONITOR]: [NodeName.INFO],
+  [NodeName.ENGINEER]: [NodeName.INFO],
   
-  // --- Phase 3: Judgment (The "Phán quyết" Stage) ---
-  // INFO now receives consolidated reports from the two chains and sends to the "Judgment Council".
+  // --- Phase 4: Judgment (The "Phán quyết" Stage) ---
+  // INFO consolidates observations and sends them to the "Judgment Council".
   [NodeName.INFO]: [NodeName.ARBITER, NodeName.PHI_LOGIC, NodeName.META],
 
-  // The council members can advise the ARBITER before its final decision.
+  // The council members advise the ARBITER before its final decision.
+  // FIX: Removed duplicate key definitions for CHAR, CLICK, ETHOS, META, and PHI_LOGIC.
+  // Their roles in the composition chain and judgment council take precedence over
+  // their roles as sensors to resolve the conflict in this static routing matrix.
   [NodeName.PHI_LOGIC]: [NodeName.ARBITER],
   [NodeName.META]: [NodeName.ARBITER],
-  // FIX: The ARBITER was a terminal node, causing the simulation to stop after one cycle.
-  // By routing its decision back to INSIGHT, a continuous feedback loop is created,
-  // allowing the simulation to run until the configured tick limit is reached.
+  
+  // The ARBITER's ruling creates a feedback loop, starting a new cycle with INSIGHT.
   [NodeName.ARBITER]: [NodeName.INSIGHT], 
 
-  // --- Silent Nodes ---
-  // These nodes are not part of the primary protocol flow.
-  [NodeName.DATA]: [],
-  [NodeName.ART]: [],
-  [NodeName.MONITOR]: [],
-  [NodeName.ENGINEER]: [],
-  [NodeName.DMT]: [],
+  // --- Silent/Unused Nodes in this Protocol ---
   [NodeName.ORCHESTRATOR]: [],
+  [NodeName.ETHOS]: [], // ETHOS is an advisor endpoint in this mode, it does not route forward.
 };
 
 // V6.4: ETHOS now routes to a strategic council (INSIGHT, META, INFO).
@@ -176,7 +183,7 @@ export const LUCID_DREAM_ROUTING_MATRIX: Record<NodeName, NodeName[]> = {
   [NodeName.GEO3D]: [],
   [NodeName.MONITOR]: [],
   [NodeName.MATH]: [],
-  [NodeName.DMT]: [],
+  [NodeName.QTM]: [],
   [NodeName.ORCHESTRATOR]: [],
 };
 
@@ -223,7 +230,7 @@ export const FHIEMDIEN_ROUTING_MATRIX: Record<NodeName, NodeName[]> = {
   [NodeName.PHI_LOGIC]: [],
   [NodeName.PROBABILITY]: [],
   [NodeName.ENGINEER]: [],
-  [NodeName.DMT]: [],
+  [NodeName.QTM]: [],
   [NodeName.ARBITER]: [], 
   [NodeName.ORCHESTRATOR]: [],
 };
@@ -260,14 +267,14 @@ export const PRISMA_ROUTING_MATRIX: Record<NodeName, NodeName[]> = {
   [NodeName.ART]: [NodeName.INFO],
   [NodeName.TECH]: [NodeName.INFO],
   [NodeName.INFO]: [NodeName.ARBITER],
-  [NodeName.PHI]: [],
+  [NodeName.PHI]: [NodeName.DMAT],
   [NodeName.COSMO]: [],
   [NodeName.GEO3D]: [],
   [NodeName.DATA]: [],
   [NodeName.MONITOR]: [],
   [NodeName.PROBABILITY]: [],
   [NodeName.ENGINEER]: [],
-  [NodeName.DMT]: [],
+  [NodeName.QTM]: [],
   [NodeName.ARBITER]: [],
   [NodeName.ORCHESTRATOR]: [],
 };

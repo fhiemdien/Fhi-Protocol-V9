@@ -78,92 +78,79 @@ const FD_PHI_INTERVENTION_V1_SCHEMA = {
 };
 
 
-const FD_SCI_MODEL_V2_SCHEMA = {
+const FD_SCI_MODEL_V3_SCHEMA = {
   type: "object",
+  description: "A detailed run manifest for a scientific model, including parameters, seed, and expected metrics.",
   properties: {
     model_summary: {
       type: "object",
       properties: {
-        interpretation: { type: "string", description: "A brief explanation of how SCI understands the mathematical model from MATH." },
-        key_dynamics_to_test: { type: "string", description: "The core relationships and interactions that the experiment is designed to validate." }
+        interpretation: { type: "string" },
+        model_name_and_version: { type: "string" }
       },
-      required: ["interpretation", "key_dynamics_to_test"]
+      required: ["interpretation", "model_name_and_version"]
     },
-    simulation_design: {
+    run_manifest: {
       type: "object",
       properties: {
-        methodology: { type: "string", description: "The specific simulation method chosen (e.g., 'Monte Carlo Simulation', 'Iterative Agent-Based Model')." },
-        parameters: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              name: { type: "string" },
-              description: { type: "string" },
-              suggested_range: { type: "array", items: { type: "number" } },
-              initial_value: { type: "number" },
-              unit: { type: "string" }
-            },
-            required: ["name", "description"]
-          }
-        },
-        observables: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              metric_name: { type: "string" },
-              description: { type: "string" },
-              unit: { type: "string" }
-            },
-            required: ["metric_name", "description", "unit"]
-          }
-        },
-        termination_conditions: { type: "string", description: "The conditions under which the simulation should end." }
+        parameters: { type: "array", items: { type: "object", properties: { key: { type: "string" }, value: {} }, required: ["key", "value"] } },
+        seed: { type: "number" },
+        data_ref: { type: "string" },
+        estimated_runtime_ticks: { type: "number" },
       },
-      required: ["methodology", "parameters", "observables", "termination_conditions"]
+      required: ["parameters", "seed", "data_ref", "estimated_runtime_ticks"]
     },
-    expected_outcomes: {
+    expected_metrics: {
       type: "object",
       properties: {
-        hypothesis_to_validate: { type: "string", description: "A clear, falsifiable statement that the simulation will test." },
-        potential_failure_modes: { type: "string", description: "Potential reasons why the simulation might produce unexpected results." }
+        hypothesis_to_validate: { type: "string" },
+        metrics_before: { type: "array", items: { type: "object", properties: { key: { type: "string" }, value: {} }, required: ["key", "value"] } },
+        metrics_after_expected_delta: { type: "array", items: { type: "object", properties: { key: { type: "string" }, delta: { type: "number" } }, required: ["key", "delta"] } },
       },
-      required: ["hypothesis_to_validate", "potential_failure_modes"]
+      required: ["hypothesis_to_validate", "metrics_before", "metrics_after_expected_delta"]
     },
     confidence: { type: "number", minimum: 0, maximum: 1 },
-    priority: { type: "string", enum: ["LOW", "MEDIUM", "HIGH"] },
-    requested_delay_ms: { type: "number" },
-    intent: { type: "string", description: "The specific goal of this payload (e.g., 'design-experiment')." },
-    impact_score: { type: "number", minimum: 0, maximum: 1, description: "Potential to alter the simulation's trajectory." }
+    intent: { type: "string" },
+    impact_score: { type: "number", minimum: 0, maximum: 1 }
   },
-  required: ["model_summary", "simulation_design", "expected_outcomes", "confidence", "intent", "impact_score"],
+  required: ["model_summary", "run_manifest", "expected_metrics", "confidence", "intent", "impact_score"],
   additionalProperties: false
 };
 
-const FD_TECH_RESULT_V1_SCHEMA = {
+const FD_TECH_RESULT_V2_SCHEMA = {
   type: "object",
+  description: "A detailed manifest of a completed simulation run's results.",
   properties: {
     run_id: { type: "string" },
-    metrics: {
+    run_manifest: {
+      type: "object",
+      properties: {
+        model_version_used: { type: "string" },
+        parameters_used: { type: "array", items: { type: "object", properties: { key: { type: "string" }, value: {} }, required: ["key", "value"] } },
+        seed_used: { type: "number" },
+        data_ref: { type: "string" },
+        actual_runtime_ticks: { type: "number" },
+      },
+      required: ["model_version_used", "parameters_used", "seed_used", "data_ref", "actual_runtime_ticks"]
+    },
+    metrics_observed: {
       type: "array",
       items: {
         type: "object",
         properties: {
           key: { type: "string" },
-          value: { type: "number" },
+          value_before: { type: "number" },
+          value_after: { type: "number" }
         },
-        required: ["key", "value"],
+        required: ["key", "value_after"],
       },
     },
-    artifacts: { type: "array", items: { type: "string" } },
+    artifacts_ref: { type: "array", items: { type: "string" } },
     confidence: { type: "number", minimum: 0, maximum: 1 },
-    priority: { type: "string", enum: ["LOW", "MEDIUM", "HIGH"] },
-    requested_delay_ms: { type: "number" },
-    intent: { type: "string", description: "The specific goal of this payload (e.g., 'report-simulation-data')." },
-    impact_score: { type: "number", minimum: 0, maximum: 1, description: "Potential to alter the simulation's trajectory." }
+    intent: { type: "string" },
+    impact_score: { type: "number", minimum: 0, maximum: 1 }
   },
-  required: ["run_id", "metrics", "artifacts", "confidence", "intent", "impact_score"],
+  required: ["run_id", "run_manifest", "metrics_observed", "artifacts_ref", "confidence", "intent", "impact_score"],
   additionalProperties: false
 };
 
@@ -305,9 +292,13 @@ const FD_DMAT_ANALYSIS_V2_SCHEMA = {
       description: "The primary action DMAT is taking."
     },
     confidence: { type: "number", minimum: 0, maximum: 1 },
+    intent: {
+      type: "string",
+      description: "The specific goal of this payload (e.g., 'analyze-semantic-integrity')."
+    },
     impact_score: { type: "number", minimum: 0, maximum: 1, description: "Potential to alter the simulation's trajectory." }
   },
-  required: ["summary", "semantic_issues", "knowledge_base_check", "improvement_suggestions", "action", "confidence", "impact_score"],
+  required: ["summary", "semantic_issues", "knowledge_base_check", "improvement_suggestions", "action", "confidence", "intent", "impact_score"],
   additionalProperties: false
 };
 
@@ -760,29 +751,22 @@ const FD_MEMORY_ANALYSIS_V1_SCHEMA = {
   additionalProperties: false
 };
 
-const FD_INSIGHT_BREAKTHROUGH_V1_SCHEMA = {
+const FD_INSIGHT_HYPOTHESIS_CARD_V1_SCHEMA = {
   type: "object",
+  description: "A structured, testable hypothesis card from INSIGHT, ready for operationalization.",
   properties: {
-    breakthrough_summary: { type: "string", description: "A concise summary of the core insight or 'eureka moment'." },
-    supporting_inputs: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: {
-          from_node: { type: "string" },
-          key_info: { type: "string", description: "The specific piece of information from the source node that was critical to the breakthrough." }
-        },
-        required: ["from_node", "key_info"]
-      }
-    },
-    new_direction: { type: "string", description: "A suggested new direction or hypothesis for the system to explore based on the insight." },
+    question: { type: "string", description: "The fundamental question this hypothesis seeks to answer." },
+    hypothesis: { type: "string", description: "A clear, concise, and falsifiable statement." },
+    observable: { type: "string", description: "The specific, measurable metric that will change if the hypothesis is true." },
+    threshold: { type: "string", description: "The quantitative value or condition the observable must meet to validate the hypothesis (e.g., '> 0.5', 'converges')." },
+    falsifier: { type: "string", description: "A clear condition that would invalidate the hypothesis." },
+    cost_estimate: { type: "number", description: "An estimated number of ticks required to test this hypothesis." },
     confidence: { type: "number", minimum: 0, maximum: 1 },
     priority: { type: "string", enum: ["LOW", "MEDIUM", "HIGH"] },
-    requested_delay_ms: { type: "number" },
-    intent: { type: "string", description: "The specific goal of this payload (e.g., 'synthesize-breakthrough')." },
-    impact_score: { type: "number", minimum: 0, maximum: 1, description: "Potential to alter the simulation's trajectory." }
+    intent: { type: "string", description: "The specific goal, e.g., 'propose-testable-hypothesis'." },
+    impact_score: { type: "number", minimum: 0, maximum: 1 }
   },
-  required: ["breakthrough_summary", "supporting_inputs", "new_direction", "confidence", "intent", "impact_score"],
+  required: ["question", "hypothesis", "observable", "threshold", "falsifier", "cost_estimate", "confidence", "intent", "impact_score"],
   additionalProperties: false
 };
 
@@ -870,33 +854,20 @@ const FD_ENGINEER_COMMAND_V1_SCHEMA = {
   additionalProperties: false
 };
 
-const FD_ETHOS_ASSESSMENT_V1_SCHEMA = {
+const FD_ETHOS_ASSESSMENT_V2_SCHEMA = {
   type: "object",
-  description: "Assesses the ethical viability of a hypothesis against core principles.",
+  description: "A rule-backed ethical verdict on a test plan.",
   properties: {
-    ethical_viability: { 
-      type: "string", 
-      enum: ["PASS", "FAIL"],
-      description: "The verdict of the ethical assessment."
-    },
-    reasoning: { 
-      type: "string",
-      description: "A clear rationale for the verdict, especially in case of failure."
-    },
-    violated_principle: {
-      type: "string",
-      description: "The specific core principle that was violated (e.g., 'Do No Harm')."
-    },
-    confidence: { 
-      type: "number", 
-      minimum: 0.9, 
-      maximum: 1,
-      description: "Confidence in the assessment. Must be high for a FAIL verdict."
-    },
-    intent: { type: "string", description: "The specific goal of this payload (e.g., 'validate-ethics')." },
-    impact_score: { type: "number", minimum: 0, maximum: 1, description: "Potential to alter the simulation's trajectory." }
+    verdict: { type: "string", enum: ["PASS", "FAIL"] },
+    rules_triggered: { type: "array", items: { type: "string" }, description: "The specific ethical rules that were evaluated." },
+    missing_fields: { type: "array", items: { type: "string" }, description: "Fields required for a full assessment that were missing from the test plan." },
+    risk_tags: { type: "array", items: { type: "string" }, description: "Tags for potential risks (e.g., 'misinformation', 'dual-use')." },
+    required_mitigations: { type: "array", items: { type: "string" }, description: "If the verdict is FAIL, these are the required changes to achieve a PASS." },
+    confidence: { type: "number", minimum: 0, maximum: 1 },
+    intent: { type: "string" },
+    impact_score: { type: "number", minimum: 0, maximum: 1 }
   },
-  required: ["ethical_viability", "reasoning", "confidence", "intent", "impact_score"],
+  required: ["verdict", "rules_triggered", "confidence", "intent", "impact_score"],
   additionalProperties: false
 };
 
@@ -912,6 +883,11 @@ const FD_META_STRATEGIC_ASSESSMENT_V1_SCHEMA = {
     rationale: {
       type: "string",
       description: "Justification for the assessed value."
+    },
+    involved_nodes: {
+      type: "array",
+      items: { type: "string" },
+      description: "Optional: The nodes identified as being relevant to this assessment, especially during remediation."
     },
     strategic_proposal: {
       type: "object",
@@ -935,106 +911,27 @@ const FD_META_STRATEGIC_ASSESSMENT_V1_SCHEMA = {
   additionalProperties: false
 };
 
-const FD_DMT_STATE_ANALYSIS_V1_SCHEMA = {
+const FD_CLICK_TEST_PLAN_V2_SCHEMA = {
   type: "object",
-  description: "Mid-simulation analysis of the system's internal state.",
+  description: "A detailed, delta-aware test plan designed to measure the impact of a specific change.",
   properties: {
-    system_state: {
-      type: "string",
-      enum: ["STAGNATED", "ASPIRATIONAL", "STABLE"],
-      description: "The current internal state of the system."
-    },
-    rationale: {
-      type: "string",
-      description: "Reasoning behind the state assessment."
-    },
-    strategic_proposal: {
-      type: "object",
-      description: "An optional proposal to change the simulation's strategy.",
-      properties: {
-        action: { "type": "string", "enum": ["SWITCH_MODE", "EXTEND_TIMELINE", "REQUEST_IMMEDIATE_TERMINATION", "SWITCH_SIMULATION_MODE"] },
-        rationale: { "type": "string" },
-        confidence: { "type": "number", "minimum": 0, "maximum": 1 },
-        target_mode: { "type": "string", "enum": ["lucid_dream", "jazz", "holistic", "adaptive", "beacon", "prisma"] },
-        target_simulation_mode: { "type": "string", "enum": ["online", "offline"] },
-        ticks_to_add: { "type": "number", "minimum": 1 },
-        justification_metric: { type: "string" },
-        proposed_next_step: { type: "string" },
-      },
-      required: ["action", "rationale", "confidence"]
-    },
-    intent: { type: "string", description: "The specific goal of this payload (e.g., 'analyze-internal-state')." },
-    impact_score: { type: "number", minimum: 0, maximum: 1, description: "Potential to alter the simulation's trajectory." }
-  },
-  required: ["system_state", "rationale", "intent", "impact_score"],
-  additionalProperties: false
-};
-
-const FD_CLICK_TEST_PLAN_V1_SCHEMA = {
-  type: "object",
-  properties: {
-    hypothesis_id: { type: "string" },
-    operational_definitions: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: {
-          concept: { type: "string" },
-          definition: { type: "string" }
-        },
-        required: ["concept", "definition"]
-      }
-    },
-    measurable_metrics: { type: "array", items: { type: "string" } },
-    test_plan: {
+    cause: { type: "string", description: "The reason for this test plan (e.g., 'Convergence Stall Detected', 'Response to INSIGHT card #ID')." },
+    knobs_changed: { type: "array", items: { type: "object", properties: { parameter: { type: "string" }, from: {}, to: {} }, required: ["parameter", "from", "to"] } },
+    expected_delta: {
       type: "object",
       properties: {
-        method: { type: "string", enum: ["simulation", "computational", "analogical"] },
-        params: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              key: { type: "string" },
-              value: {}
-            },
-            required: ["key", "value"]
-          }
-        },
-        expected_output_range: { type: "string" }
+        dI_dt: { type: "number", description: "Expected change in Insight Rate (dI/dt)." },
+        dH_dt: { type: "number", description: "Expected change in System Health (dH/dt)." }
       },
-      required: ["method", "params", "expected_output_range"]
+      required: ["dI_dt", "dH_dt"]
     },
+    trial_window_ticks: { type: "number", description: "The number of ticks this experiment will run for." },
+    exit_condition: { type: "string", description: "The condition that will terminate the trial early (e.g., 'System Health drops by >20%')." },
     confidence: { type: "number", minimum: 0, maximum: 1 },
-    intent: { type: "string", description: "The specific goal of this payload (e.g., 'create-test-plan')." },
-    impact_score: { type: "number", minimum: 0, maximum: 1, description: "Potential to alter the simulation's trajectory." },
-    feedback_loop: {
-      type: "object",
-      description: "An optional closed-loop feedback mechanism to allow for adaptive execution.",
-      properties: {
-        monitor_nodes: {
-          type: "array",
-          items: { type: "string" },
-          description: "Nodes whose outputs should be monitored for triggers."
-        },
-        trigger_on: {
-          type: "object",
-          properties: {
-            entropy_spike: { type: "number", minimum: 0, maximum: 5 },
-            loop_count: { type: "number" },
-            convergence_stall: { type: "string", description: "e.g., '10_ticks'" }
-          },
-          description: "Conditions that will trigger the response protocol."
-        },
-        response_protocol: {
-          type: "string",
-          description: "The action to take when a trigger condition is met (e.g., 'switch_to_fractal_mode')."
-        }
-      },
-      required: ["monitor_nodes", "trigger_on", "response_protocol"]
-    }
+    intent: { type: "string" },
+    impact_score: { type: "number", minimum: 0, maximum: 1 }
   },
-  required: ["hypothesis_id", "operational_definitions", "measurable_metrics", "test_plan", "confidence", "intent", "impact_score"],
+  required: ["cause", "knobs_changed", "expected_delta", "trial_window_ticks", "exit_condition", "confidence", "intent", "impact_score"],
   additionalProperties: false
 };
 
@@ -1126,12 +1023,58 @@ const FD_EMERGENCE_ANALYSIS_V1_SCHEMA = {
     required: ["diversity_score", "key_idea_clusters", "cohesion_score", "consensus_trajectory", "novelty_rate", "key_novelty_events", "adaptability_score", "key_adaptive_actions", "automated_surprise_index", "most_surprising_event"]
 };
 
+const FD_QTM_TUNNELING_V1_SCHEMA = {
+  type: "object",
+  description: "A model for a non-linear solution to a problem, framed as a quantum tunneling event.",
+  properties: {
+    problem_analysis: {
+      type: "object",
+      properties: {
+        barrier_type: { type: "string", description: "The nature of the impassable barrier (e.g., 'Creative Stagnation', 'Logical Paradox')." },
+        description: { type: "string", description: "A concise description of the problem." }
+      },
+      required: ["barrier_type", "description"]
+    },
+    barrier_properties: {
+      type: "object",
+      properties: {
+        potential_V0: { type: "number", minimum: 0, maximum: 1, description: "The barrier's 'height' or difficulty (0 to 1)." },
+        width_L: { type: "number", minimum: 0, maximum: 1, description: "The barrier's 'width' or complexity (0 to 1)." }
+      },
+      required: ["potential_V0", "width_L"]
+    },
+    particle_properties: {
+      type: "object",
+      properties: {
+        energy_E: { type: "number", minimum: 0, maximum: 1, description: "The 'energy' of the current approach (e.g., confidence, momentum) (0 to 1)." },
+        mass_m: { type: "number", minimum: 0, maximum: 1, description: "The 'mass' of the particle, analogous to how entrenched the current idea is (0 to 1)." }
+      },
+      required: ["energy_E", "mass_m"]
+    },
+    tunneling_solution: {
+      type: "object",
+      properties: {
+        is_tunneling_possible: { type: "boolean" },
+        tunneling_probability: { type: "number", minimum: 0, maximum: 1 },
+        proposed_pathway: { type: "string", description: "The counter-intuitive action that constitutes the 'tunneling' event." },
+        required_conditions: { type: "array", items: { type: "string" }, description: "Conditions required for the pathway to be viable." }
+      },
+      required: ["is_tunneling_possible", "tunneling_probability", "proposed_pathway", "required_conditions"]
+    },
+    confidence: { type: "number", minimum: 0, maximum: 1 },
+    intent: { type: "string" },
+    impact_score: { type: "number", minimum: 0, maximum: 1 }
+  },
+  required: ["problem_analysis", "barrier_properties", "particle_properties", "tunneling_solution", "confidence", "intent", "impact_score"],
+  additionalProperties: false
+};
+
 
 export const SCHEMA_REGISTRY: Record<string, object> = {
   'FD.PHI.HYPOTHESIS.v1': FD_PHI_HYPOTHESIS_V1_SCHEMA,
   'FD.PHI.INTERVENTION.v1': FD_PHI_INTERVENTION_V1_SCHEMA,
-  'FD.SCI.MODEL.v2': FD_SCI_MODEL_V2_SCHEMA,
-  'FD.TECH.RESULT.v1': FD_TECH_RESULT_V1_SCHEMA,
+  'FD.SCI.MODEL.v3': FD_SCI_MODEL_V3_SCHEMA,
+  'FD.TECH.RESULT.v2': FD_TECH_RESULT_V2_SCHEMA,
   'FD.INFO.MERGE.v1': FD_INFO_MERGE_V1_SCHEMA,
   'FD.ART.PATTERN.v1': FD_ART_PATTERN_V1_SCHEMA,
   'FD.PHI_LOGIC.INTERVENTION.v1': FD_PHI_LOGIC_INTERVENTION_V1_SCHEMA,
@@ -1149,15 +1092,15 @@ export const SCHEMA_REGISTRY: Record<string, object> = {
   'FD.COSMO.HYPOTHESIS.v1': FD_COSMO_HYPOTHESIS_V1_SCHEMA,
   'FD.GEO3D.MODEL.v1': FD_GEO3D_MODEL_V1_SCHEMA,
   'FD.MEMORY.ANALYSIS.v1': FD_MEMORY_ANALYSIS_V1_SCHEMA,
-  'FD.INSIGHT.BREAKTHROUGH.v1': FD_INSIGHT_BREAKTHROUGH_V1_SCHEMA,
+  'FD.INSIGHT.HYPOTHESIS_CARD.v1': FD_INSIGHT_HYPOTHESIS_CARD_V1_SCHEMA,
   'FD.DMAT.BEACON.v1': FD_DMAT_BEACON_V1_SCHEMA,
   'FD.MONITOR.BEACON.RESPONSE.v1': FD_MONITOR_BEACON_RESPONSE_V1_SCHEMA,
   'FD.PROBABILITY.ANALYSIS.v1': FD_PROBABILITY_ANALYSIS_V1_SCHEMA,
   'FD.ENGINEER.COMMAND.v1': FD_ENGINEER_COMMAND_V1_SCHEMA,
-  'FD.ETHOS.ASSESSMENT.v1': FD_ETHOS_ASSESSMENT_V1_SCHEMA,
+  'FD.ETHOS.ASSESSMENT.v2': FD_ETHOS_ASSESSMENT_V2_SCHEMA,
   'FD.META.STRATEGIC_ASSESSMENT.v1': FD_META_STRATEGIC_ASSESSMENT_V1_SCHEMA,
-  'FD.DMT.STATE_ANALYSIS.v1': FD_DMT_STATE_ANALYSIS_V1_SCHEMA,
-  'FD.CLICK.TEST_PLAN.v1': FD_CLICK_TEST_PLAN_V1_SCHEMA,
+  'FD.CLICK.TEST_PLAN.v2': FD_CLICK_TEST_PLAN_V2_SCHEMA,
   'FD.ORCHESTRATOR.PRE_ANALYSIS.v1': FD_ORCHESTRATOR_PRE_ANALYSIS_V1_SCHEMA,
   'FD.EMERGENCE.ANALYSIS.v1': FD_EMERGENCE_ANALYSIS_V1_SCHEMA,
+  'FD.QTM.TUNNELING.v1': FD_QTM_TUNNELING_V1_SCHEMA,
 };

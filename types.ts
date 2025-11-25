@@ -21,7 +21,7 @@ export enum NodeName {
   ENGINEER = 'ENGINEER',
   PROBABILITY = 'PROBABILITY',
   ETHOS = 'ETHOS',
-  DMT = 'DMT',
+  QTM = 'QTM',
   ORCHESTRATOR = 'ORCHESTRATOR',
   CLICK = 'CLICK',
 }
