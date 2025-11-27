@@ -379,8 +379,10 @@ interface AIProvider {
 // --- Gemini Provider Implementation ---
 class GeminiProvider implements AIProvider {
     private ai: GoogleGenAI | null = null;
+    private modelName: string;
 
-    constructor(apiKey: string | null) {
+    constructor(apiKey: string | null, modelName: string) {
+        this.modelName = modelName || 'gemini-2.5-flash';
         if (apiKey) {
             this.ai = new GoogleGenAI({ apiKey });
         }
@@ -535,7 +537,7 @@ class GeminiProvider implements AIProvider {
         ];
 
         const response = await this.ai.models.generateContent({
-          model: "gemini-2.5-flash",
+          model: this.modelName,
           contents: contents,
           config: {
             responseMimeType: "application/json",
@@ -561,7 +563,7 @@ class GeminiProvider implements AIProvider {
         ];
 
         const response = await this.ai.models.generateContent({
-          model: "gemini-2.5-flash",
+          model: this.modelName,
           contents: contents,
           config: {
             responseMimeType: "application/json",
@@ -616,7 +618,7 @@ class GeminiProvider implements AIProvider {
         const prompt = "You are META. Analyze this report to find system-level patterns (loops, bias). Output JSON matching FD.META.ANALYSIS.v1 schema.";
         const contents = [ { text: prompt }, { text: `Here is the JSON report (note: may be pruned for brevity):\n\n${JSON.stringify(reportForAnalysis, null, 2)}` } ];
         const response = await this.ai.models.generateContent({
-            model: "gemini-2.5-flash",
+            model: this.modelName,
             contents: contents,
             config: { responseMimeType: "application/json", responseSchema: geminiSchema },
         });
@@ -645,7 +647,7 @@ class GeminiProvider implements AIProvider {
             { text: `Arbiter v2.0 Metrics:\n- trace_depth: ${trace_depth}\n- node_diversity: ${node_diversity.toFixed(2)}\n- avg_confidence: ${avg_confidence.toFixed(2)}` }
         ];
         const response = await this.ai.models.generateContent({
-            model: "gemini-2.5-flash",
+            model: this.modelName,
             contents: contents,
             config: { responseMimeType: "application/json", responseSchema: geminiSchema },
         });
@@ -666,7 +668,7 @@ class GeminiProvider implements AIProvider {
 
         const contents = [ { text: prompt }, { text: `Here is the core report data:\n\n${JSON.stringify(summaryContext, null, 2)}` } ];
         const response = await this.ai.models.generateContent({
-            model: "gemini-2.5-flash",
+            model: this.modelName,
             contents: contents
         });
         return response.text || "Summary could not be generated.";
@@ -701,7 +703,7 @@ class GeminiProvider implements AIProvider {
         ];
         
         const response = await this.ai.models.generateContent({
-          model: "gemini-2.5-flash",
+          model: this.modelName,
           contents: contents,
           config: {
             responseMimeType: "application/json",
@@ -1285,7 +1287,7 @@ class AIService {
         }
         if (config.provider === 'gemini') {
             apiCallIntervalMs = 3000; // 20 RPM for Gemini Free Tier
-            this.activeProvider = new GeminiProvider(config.apiKey);
+            this.activeProvider = new GeminiProvider(config.apiKey, config.modelName || 'gemini-2.5-flash');
         } else if (config.provider === 'openai-compatible') {
             apiCallIntervalMs = 50; // A more aggressive default for potentially faster services like Groq
             this.activeProvider = new OpenAICompatibleProvider(config);

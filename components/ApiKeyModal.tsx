@@ -14,11 +14,22 @@ const ApiKeyModal: React.FC<ApiKeyModalProps> = ({ currentConfig, onSave, onClos
   const [baseURL, setBaseURL] = useState(currentConfig.baseURL || '');
   const [modelName, setModelName] = useState(currentConfig.modelName || '');
 
+  // Set defaults when provider changes if modelName is empty
+  useEffect(() => {
+    if (!modelName) {
+        if (provider === 'gemini') {
+            setModelName('gemini-2.5-flash');
+        } else if (provider === 'openai-compatible') {
+            setModelName('gpt-4o');
+        }
+    }
+  }, [provider, modelName]);
+
   useEffect(() => {
     setProvider(currentConfig.provider);
     setApiKey(currentConfig.apiKey || '');
     setBaseURL(currentConfig.baseURL || '');
-    setModelName(currentConfig.modelName || '');
+    setModelName(currentConfig.modelName || (currentConfig.provider === 'gemini' ? 'gemini-2.5-flash' : ''));
   }, [currentConfig]);
 
   const handleSave = () => {
@@ -27,7 +38,7 @@ const ApiKeyModal: React.FC<ApiKeyModalProps> = ({ currentConfig, onSave, onClos
         provider,
         apiKey: apiKey.trim(),
         baseURL: baseURL.trim(),
-        modelName: modelName.trim(),
+        modelName: modelName.trim() || (provider === 'gemini' ? 'gemini-2.5-flash' : 'gpt-4o'),
       });
     }
   };
@@ -82,39 +93,43 @@ const ApiKeyModal: React.FC<ApiKeyModalProps> = ({ currentConfig, onSave, onClos
                 />
             </div>
 
+            <div>
+                <label htmlFor="model-name-input" className="block text-sm font-medium text-slate-300 mb-2">
+                    Model Name
+                </label>
+                <input
+                    id="model-name-input"
+                    type="text"
+                    value={modelName}
+                    onChange={(e) => setModelName(e.target.value)}
+                    placeholder={provider === 'gemini' ? "e.g., gemini-2.5-flash" : "e.g., gpt-4o"}
+                    className={`w-full bg-slate-800 border border-slate-600 rounded-md p-2 text-slate-200 focus:outline-none focus:ring-2 ${modeTheme.ring}`}
+                />
+                {provider === 'gemini' && (
+                    <p className="text-xs text-slate-500 mt-1">
+                        Recommended: <code>gemini-2.5-flash</code>, <code>gemini-1.5-pro</code>, <code>gemini-2.0-flash-thinking-exp</code>
+                    </p>
+                )}
+            </div>
+
             {provider === 'openai-compatible' && (
-                <>
-                    <div>
-                        <label htmlFor="base-url-input" className="block text-sm font-medium text-slate-300 mb-2">
-                            Base URL (Optional)
-                        </label>
-                        <input
-                            id="base-url-input"
-                            type="text"
-                            value={baseURL}
-                            onChange={(e) => setBaseURL(e.target.value)}
-                            placeholder="e.g., https://api.groq.com/openai/v1"
-                            className={`w-full bg-slate-800 border border-slate-600 rounded-md p-2 text-slate-200 focus:outline-none focus:ring-2 ${modeTheme.ring}`}
-                        />
-                         <p className="text-xs text-slate-500 mt-1">Leave empty to use the default OpenAI API endpoint.</p>
-                    </div>
-                    <div>
-                        <label htmlFor="model-name-input" className="block text-sm font-medium text-slate-300 mb-2">
-                            Model Name
-                        </label>
-                        <input
-                            id="model-name-input"
-                            type="text"
-                            value={modelName}
-                            onChange={(e) => setModelName(e.target.value)}
-                            placeholder="e.g., llama3-70b-8192"
-                            className={`w-full bg-slate-800 border border-slate-600 rounded-md p-2 text-slate-200 focus:outline-none focus:ring-2 ${modeTheme.ring}`}
-                        />
-                    </div>
-                </>
+                <div>
+                    <label htmlFor="base-url-input" className="block text-sm font-medium text-slate-300 mb-2">
+                        Base URL (Optional)
+                    </label>
+                    <input
+                        id="base-url-input"
+                        type="text"
+                        value={baseURL}
+                        onChange={(e) => setBaseURL(e.target.value)}
+                        placeholder="e.g., https://api.groq.com/openai/v1"
+                        className={`w-full bg-slate-800 border border-slate-600 rounded-md p-2 text-slate-200 focus:outline-none focus:ring-2 ${modeTheme.ring}`}
+                    />
+                        <p className="text-xs text-slate-500 mt-1">Leave empty to use the default OpenAI API endpoint.</p>
+                </div>
             )}
              {provider === 'gemini' && (
-                <p className="text-xs text-slate-400 text-center">
+                <p className="text-xs text-slate-400 text-center mt-2">
                     Get your key from{' '}
                     <a href="https://aistudio.google.com/" target="_blank" rel="noopener noreferrer" className={`${modeTheme.text} hover:underline`}>
                         Google AI Studio
